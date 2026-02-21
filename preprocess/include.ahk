@@ -207,8 +207,13 @@ ParseInclude(input, output, includeMap, isRoot := false, includeChain := []) {
             continue
         }
 
+        finalLine := A_LoopReadLine
+        if(args.bitness != "any") {
+            finalLine := StrReplace(finalLine, "A_PtrSize", args.bitness == "32" ? "4" : "8")
+        }
+
         if(!args.dryrun) {
-            output.WriteLine(A_LoopReadLine)
+            output.WriteLine(finalLine)
         }
     }
 
@@ -363,6 +368,14 @@ ParseCommandLine() {
         default: A_ScriptDir "\preprocess-" A_Now ".log",
         help: "The log file path",
         validator: (val) => PathIsWriteableDirectory(val)
+    })
+
+    parser.AddOption("bitness", {
+        long: "bitness",
+        short: "b",
+        default: "any",
+        choices: ["any", "32", "64"],
+        help: "If not 'any', replace A_PtrSize with literal pointer size"
     })
 
     parser.AddFlag("dryrun", {
