@@ -211,6 +211,9 @@ ParseInclude(input, output, includeMap, isRoot := false, includeChain := []) {
         if(args.bitness != "any") {
             finalLine := StrReplace(finalLine, "A_PtrSize", args.bitness == "32" ? "4" : "8")
         }
+        if(args.compiled) {
+            finalLine := StrReplace(finalLine, "A_IsCompiled", "true")
+        }
 
         if(!args.dryrun) {
             output.WriteLine(finalLine)
@@ -376,6 +379,12 @@ ParseCommandLine() {
         default: "any",
         choices: ["any", "32", "64"],
         help: "If not 'any', replace A_PtrSize with literal pointer size"
+    })
+
+    parser.AddFlag("compiled", {
+        long: "compiled",
+        short: "c",
+        help: "If present, replace A_IsCompiled with true"
     })
 
     parser.AddFlag("dryrun", {
