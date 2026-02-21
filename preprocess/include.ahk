@@ -217,6 +217,9 @@ ParseInclude(input, output, includeMap, isRoot := false, includeChain := []) {
         if(args.dedent) {
             finalLine := LTrim(finalLine)
         }
+        if(!args.keepComments) {
+            finalLine := TrimTrailingComment(finalLine)
+        }
 
         if(!args.dryrun) {
             output.WriteLine(finalLine)
@@ -229,6 +232,22 @@ ParseInclude(input, output, includeMap, isRoot := false, includeChain := []) {
 
     Log.Info(Format("Finished processing '{1}'", input))
     includeChain.Pop()
+}
+
+/**
+ * Trims trailing comments off of a code line
+ * @param {String} line the line
+ * @returns {String} the trimmed line 
+ */
+TrimTrailingComment(line) {
+    pos := 1
+    while (pos := InStr(line, ";", , pos)) {
+        if (pos == 1 || IsSpace(SubStr(line, pos - 1, 1))) {
+            return RTrim(SubStr(line, 1, pos - 1))
+        }
+        pos++
+    }
+    return line
 }
 
 ResolveInclude(statement, currentFile) {
