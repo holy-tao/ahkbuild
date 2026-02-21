@@ -214,6 +214,9 @@ ParseInclude(input, output, includeMap, isRoot := false, includeChain := []) {
         if(args.compiled) {
             finalLine := StrReplace(finalLine, "A_IsCompiled", "true")
         }
+        if(args.dedent) {
+            finalLine := LTrim(finalLine)
+        }
 
         if(!args.dryrun) {
             output.WriteLine(finalLine)
@@ -385,6 +388,11 @@ ParseCommandLine() {
         long: "compiled",
         short: "c",
         help: "If present, replace A_IsCompiled with true"
+    })
+    parser.AddFlag("dedent", {
+        long: "dedent",
+        short: "d",
+        help: "Dedent lines in the output file"
     })
 
     parser.AddFlag("dryrun", {
