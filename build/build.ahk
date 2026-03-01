@@ -16,62 +16,64 @@
 #DllLoad ../bin/tree-sitter.dll
 #DllLoad ../bin/tree-sitter-autohotkey.dll
 
-args := ParseCommandLine()
+Main(cmdLine := A_Args) {
+    args := ParseCommandLine(cmdLine)
 
-FileAppend("", args.loglocation)
+    FileAppend("", args.loglocation)
 
-Log.Configure(args.loglevel)
-    .ToLogger(Log.Logger()
-        .WithAppender(FileAppender(args.loglocation, 50))
-        .WithAppender(ConsoleAppender().WithPattern("{Level}: {Message}"))
-)
+    Log.Configure(args.loglevel)
+        .ToLogger(Log.Logger()
+            .WithAppender(FileAppender(args.loglocation, 50))
+            .WithAppender(ConsoleAppender().WithPattern("{Level}: {Message}"))
+    )
 
-; All uncaught errors are fatal
-OnError((thrown, mode) => (Log.Fatal(thrown), ExitApp(1)))
+    ; All uncaught errors are fatal
+    OnError((thrown, mode) => (Log.Fatal(thrown), ExitApp(1)))
 
-if(FileExist(args.output) && !args.overwrite) {
-    Log.Fatal(Format(
-        "Output file '{1}' already exists.`r`nSpecify --overwrite or -o to overwrite it if this is intentional.",
-        args.output
-    ))
-    ExitApp(1)
-}
-
-ast := BuildAST(args.input)
-
-; Build IR from the AST
-builder := IRBuilder()
-program := builder.Build(ast, FileRead(args.input, "RAW"))
-
-Log.Info(Format("IR complete: {1} top-level nodes", program.body.Length))
-if Log.CurrentLevel <= Log.Level.TRACE {
-    Log.Trace("Symbol table:`r`n" builder.symbolTable.TraceDump())
-}
-
-; Tree-shaking pass
-if args.treeShake {
-    shaker := TreeShaker()
-    dead := shaker.Run(program)
-    Log.Info(Format("Tree-shaking removed {1} dead symbols", dead.Length))
-    if Log.CurrentLevel <= Log.Level.TRACE {
-        Log.Trace("Symbol table after tree-shaking:`r`n" builder.symbolTable.TraceDump())
+    if(FileExist(args.output) && !args.overwrite) {
+        Log.Fatal(Format(
+            "Output file '{1}' already exists.`r`nSpecify --overwrite or -o to overwrite it if this is intentional.",
+            args.output
+        ))
+        ExitApp(1)
     }
+
+    ast := BuildAST(args.input)
+
+    ; Build IR from the AST
+    builder := IRBuilder()
+    program := builder.Build(ast, FileRead(args.input, "RAW"))
+
+    Log.Info(Format("IR complete: {1} top-level nodes", program.body.Length))
+    if Log.CurrentLevel <= Log.Level.TRACE {
+        Log.Trace("Symbol table:`r`n" builder.symbolTable.TraceDump())
+    }
+
+    ; Tree-shaking pass
+    if args.treeShake {
+        shaker := TreeShaker()
+        dead := shaker.Run(program)
+        Log.Info(Format("Tree-shaking removed {1} dead symbols", dead.Length))
+        if Log.CurrentLevel <= Log.Level.TRACE {
+            Log.Trace("Symbol table after tree-shaking:`r`n" builder.symbolTable.TraceDump())
+        }
+    }
+
+    Log.Info("Writing output to " args.output "...")
+    writer := Emitter()
+    outFile := FileOpen(args.output, "w", "UTF-8")
+    outFile.Write(writer.Emit(program))
+    outFile.Close()
+
+    Log.Info("Done")
+    ExitApp(0)
 }
-
-Log.Info("Writing output to " args.output "...")
-writer := Emitter()
-outFile := FileOpen(args.output, "w", "UTF-8")
-outFile.Write(writer.Emit(program))
-outFile.Close()
-
-Log.Info("Done")
-ExitApp(0)
 
 /**
  * Parse command line arguments
  * @returns {Object} object with parsed arguments
  */
-ParseCommandLine() {
+ParseCommandLine(cmdLine) {
     /**
      * @type {ArgumentParser}
      */
@@ -117,5 +119,9 @@ ParseCommandLine() {
         help: "Enable tree-shaking (dead code elimination)"
     })
 
-    return parser.Parse(A_Args)
+    return parser.Parse(cmdLine)
+}
+
+if(A_ScriptName == "build.ahk" || A_IsCompiled) {
+    Main()
 }
