@@ -517,8 +517,7 @@ class IRBuilder {
                     cls.nestedClasses.Push(nested)
                 default:
                     ; Other things in class body — opaque
-                    opaque := this._BuildOpaque(cls, child)
-                    cls.children.Push(opaque)
+                    this._BuildOpaque(cls, child)
             }
             i++
         }
@@ -939,7 +938,6 @@ class IRBuilder {
             } else {
                 arg := this._BuildNode(call, child, scope)
                 call.args.Push(arg)
-                call.children.Push(arg)
             }
             i++
         }
@@ -983,7 +981,6 @@ class IRBuilder {
                     argChild := child.GetNamedChild(j)
                     arg := this._BuildNode(ia, argChild, scope)
                     ia.args.Push(arg)
-                    ia.children.Push(arg)
                     j++
                 }
                 break
@@ -1046,7 +1043,6 @@ class IRBuilder {
             child := tsNode.GetNamedChild(i)
             elem := this._BuildNode(arr, child, scope)
             arr.elements.Push(elem)
-            arr.children.Push(elem)
             i++
         }
 
@@ -1193,8 +1189,7 @@ class IRBuilder {
         i := 0
         while i < tsNode.NamedChildCount {
             child := tsNode.GetNamedChild(i)
-            node := this._BuildNode(opaque, child, scope)
-            opaque.children.Push(node)
+            this._BuildNode(opaque, child, scope)
             i++
         }
         parent.children.Push(opaque)
@@ -1645,7 +1640,6 @@ class IRBuilder {
             child := tsNode.GetNamedChild(i)
             node := this._BuildNode(blk, child, scope)
             blk.body.Push(node)
-            blk.children.Push(node)
             i++
         }
 
