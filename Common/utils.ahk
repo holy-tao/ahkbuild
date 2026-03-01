@@ -72,3 +72,16 @@ PathIsWriteableDirectory(path) {
 
     return fullPath
 }
+
+/**
+ * Expands a path and throws an Error if it's not in a writeable directory,
+ * but allows the path to be blank
+ * @param path 
+ */
+PathIsBlankOrWriteableDirectory(path) {
+    path := Trim(path)
+    if(path != "")
+        path := PathIsWriteableDirectory(path)
+    
+    return path
+}

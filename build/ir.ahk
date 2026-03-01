@@ -110,6 +110,27 @@ class IR {
          * @type {Boolean}
          */
         IsTransformed => this.HasOwnProp("_overrideText") || this.deleted
+
+        /**
+         * Returns a string that can be used to pretty-print the IR tree
+         */
+        ToDetailedString(indent := "", isLast := true) {
+            nodeTextLine := Trim(SubStr(this.GetText(), 1, InStr(this.GetText(), "`n")), " `r`n`t")
+            if(InStr(this.GetText(), "`n"))
+                nodeTextLine .= "..."
+
+            prefix := indent = "" ? "" : indent . (isLast ? "└─ " : "├─ ")
+            str := Format("{1}{2} ({3}), [{4}, {5}]: `"{6}`"",
+                prefix, Type(this), this.tsNode.Type, this.start, this.end, nodeTextLine)
+
+            childIndent := indent . (isLast ? "   " : "│  ")
+            for (i, child in this.children) {
+                isChildLast := (i = this.children.Length)
+                str .= "`r`n" . child.ToDetailedString(childIndent, isChildLast)
+            }
+
+            return str
+        }
     }
 
     /**

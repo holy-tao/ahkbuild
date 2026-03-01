@@ -49,6 +49,13 @@ Main(cmdLine := A_Args) {
         Log.Trace("Symbol table:`r`n" builder.symbolTable.TraceDump())
     }
 
+    if(args.HasProp("dumpBeforeIr") && args.dumpBeforeIr != "") {
+        irFile := FileOpen(args.dumpBeforeIr, "w", "UTF-8")
+        irFile.Write(program.ToDetailedString())
+        irFile.Close()
+        Log.Info("Intermediate representation before transformations written to: " args.dumpBeforeIr)
+    }
+
     ; Tree-shaking pass
     if args.treeShake {
         shaker := TreeShaker()
@@ -106,6 +113,13 @@ ParseCommandLine(cmdLine) {
         default: A_ScriptDir "\ahkbuild-" A_Now ".log",
         help: "The log file path",
         validator: (val) => PathIsWriteableDirectory(val)
+    })
+
+    parser.AddOption("dumpBeforeIr", {
+        long: "dump-ir-before",
+        help: "If set, write the IR before transformations out to this file",
+        default: "",
+        validated: (val) => PathIsBlankOrWriteableDirectory(val)
     })
 
     parser.AddFlag("overwrite", {
