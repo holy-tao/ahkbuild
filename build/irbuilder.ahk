@@ -95,7 +95,6 @@ class IRBuilder {
             child := root.GetNamedChild(i)
             irNode := this._BuildNode(this.program, child, this.globalScope)
             this.program.body.Push(irNode)
-            this.program.children.Push(irNode)
             i++
         }
     }

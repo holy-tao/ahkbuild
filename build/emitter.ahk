@@ -43,6 +43,8 @@ class Patch {
         this.end := end
         this.replacement := replacement
     }
+
+    ToString() => Format("[{1}, {2}) => `"{3}`"", this.start, this.end, this.replacement)
 }
 
 /**
@@ -93,6 +95,12 @@ class Emitter {
         ; Walk the IR tree to collect patches
         this._Walk(program)
 
+        Log.Debug("Emit: collected " this.patches.Length " patches")
+        if(Log.CurrentLevel <= Log.Level.TRACE) {
+            for p in this.patches
+                Log.Trace(p)
+        }
+
         ; Sort patches by start byte (ascending)
         this._SortPatches()
 
@@ -126,8 +134,9 @@ class Emitter {
         }
 
         ; Otherwise recurse into children
-        for child in node.children
+        for child in node.children {
             this._Walk(child)
+        }
     }
 
     /**

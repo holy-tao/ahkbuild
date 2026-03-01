@@ -10,6 +10,8 @@
 #Include ../Common/utils.ahk
 #Include astbuilder.ahk
 #Include irbuilder.ahk
+#Include treeshake.ahk
+#Include emitter.ahk
 
 #DllLoad ../bin/tree-sitter.dll
 #DllLoad ../bin/tree-sitter-autohotkey.dll
@@ -45,6 +47,25 @@ Log.Info(Format("IR complete: {1} top-level nodes", program.body.Length))
 if Log.CurrentLevel <= Log.Level.TRACE {
     Log.Trace("Symbol table:`r`n" builder.symbolTable.TraceDump())
 }
+
+; Tree-shaking pass
+if args.treeShake {
+    shaker := TreeShaker()
+    dead := shaker.Run(program)
+    Log.Info(Format("Tree-shaking removed {1} dead symbols", dead.Length))
+    if Log.CurrentLevel <= Log.Level.TRACE {
+        Log.Trace("Symbol table after tree-shaking:`r`n" builder.symbolTable.TraceDump())
+    }
+}
+
+Log.Info("Writing output to " args.output "...")
+writer := Emitter()
+outFile := FileOpen(args.output, "w", "UTF-8")
+outFile.Write(writer.Emit(program))
+outFile.Close()
+
+Log.Info("Done")
+ExitApp(0)
 
 /**
  * Parse command line arguments
@@ -89,6 +110,11 @@ ParseCommandLine() {
         long: "overwrite",
         short: "o",
         help: "Overwrite the output file if it exists"
+    })
+
+    parser.AddFlag("treeShake", {
+        long: "tree-shake",
+        help: "Enable tree-shaking (dead code elimination)"
     })
 
     return parser.Parse(A_Args)

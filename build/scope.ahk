@@ -412,6 +412,12 @@ class IRSymbolTable {
             sym.isLive := true
             Log.Trace(Format.Bind("Marking {1} '{2}' live", sym.kind, sym.name))
 
+            ; If this is a class, propagate liveness to all its member symbols
+            ; (methods, properties, nested classes). This gives whole-class
+            ; granularity: either the entire class is live or it's dead.
+            if sym.kind == "class" && sym.HasOwnProp("node") && sym.node is IR.ClassDecl
+                this._MarkClassMembersLive(sym, worklist)
+
             ; Walk the symbol's declaring node to find all references to other symbols.
             ; Add any un-visited symbols to the worklist.
             if sym.HasOwnProp("node")
@@ -444,9 +450,54 @@ class IRSymbolTable {
             }
         }
 
+        ; ClassDecl superclass is stored as a raw string, not an IR.Identifier child.
+        ; Must explicitly look it up.
+        if node is IR.ClassDecl {
+            if node.superclass != "" {
+                superSym := this.Lookup(node.superclass)
+                if superSym != "" && !superSym.isLive
+                    worklist.Push(superSym)
+            }
+        }
+
+        ; GotoStmt label is a raw string, not an IR.Identifier child.
+        if node is IR.GotoStmt {
+            if node.label != "" {
+                labelSym := this.Lookup(node.label)
+                if labelSym != "" && !labelSym.isLive
+                    worklist.Push(labelSym)
+            }
+        }
+
+        ; CatchClause error types are raw strings (class names).
+        if node is IR.CatchClause {
+            for errorType in node.errorTypes {
+                errSym := this.Lookup(errorType)
+                if errSym != "" && !errSym.isLive
+                    worklist.Push(errSym)
+            }
+        }
+
         ; Recurse into children
         for child in node.children
             this._CollectReferencesInto(child, worklist)
+    }
+
+    /**
+     * When a class is marked live, push all its registered member symbols
+     * (methods, properties, nested classes) onto the worklist. This provides
+     * whole-class granularity — either the entire class is kept or removed.
+     *
+     * @param {IRSymbol} classSym the class symbol
+     * @param {Array<IRSymbol>} worklist the worklist to add to
+     */
+    _MarkClassMembersLive(classSym, worklist) {
+        prefix := StrLower(classSym.node.fullyQualifiedName) "."
+        prefixLen := StrLen(prefix)
+        for fqn, memberSym in this._symbols {
+            if SubStr(fqn, 1, prefixLen) == prefix && !memberSym.isLive
+                worklist.Push(memberSym)
+        }
     }
 
     /**
