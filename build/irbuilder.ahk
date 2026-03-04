@@ -1543,8 +1543,9 @@ class IRBuilder {
     _BuildReturn(parent, tsNode, scope) {
         ret := IR.ReturnStmt(parent, tsNode)
 
-        if tsNode.NamedChildCount > 0
-            ret.value := this._BuildNode(ret, tsNode.GetNamedChild(0), scope)
+        ; First child is the return itself, second is the return value, if there is one
+        loop tsNode.NamedChildCount > 1
+            ret.value := this._BuildNode(ret, tsNode.GetNamedChild(1), scope)
 
         parent.children.Push(ret)
         return ret
