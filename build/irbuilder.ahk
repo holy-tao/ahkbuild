@@ -1557,8 +1557,8 @@ class IRBuilder {
     _BuildBreak(parent, tsNode) {
         b := IR.BreakStmt(parent, tsNode)
 
-        if tsNode.NamedChildCount > 0
-            b.label := tsNode.GetNamedChild(0).Text
+        if tsNode.NamedChildCount > 1
+            b.label := tsNode.GetNamedChild(1).Text
 
         parent.children.Push(b)
         return b
@@ -1570,8 +1570,8 @@ class IRBuilder {
     _BuildContinue(parent, tsNode) {
         c := IR.ContinueStmt(parent, tsNode)
 
-        if tsNode.NamedChildCount > 0
-            c.label := tsNode.GetNamedChild(0).Text
+        if tsNode.NamedChildCount > 1
+            c.label := tsNode.GetNamedChild(1).Text
 
         parent.children.Push(c)
         return c
@@ -1583,8 +1583,8 @@ class IRBuilder {
     _BuildThrow(parent, tsNode, scope) {
         t := IR.ThrowStmt(parent, tsNode)
 
-        if tsNode.NamedChildCount > 0
-            t.value := this._BuildNode(t, tsNode.GetNamedChild(0), scope)
+        if tsNode.NamedChildCount > 1
+            t.value := this._BuildNode(t, tsNode.GetNamedChild(1), scope)
 
         parent.children.Push(t)
         return t
@@ -1596,8 +1596,8 @@ class IRBuilder {
     _BuildGoto(parent, tsNode) {
         g := IR.GotoStmt(parent, tsNode)
 
-        if tsNode.NamedChildCount > 0
-            g.label := tsNode.GetNamedChild(0).Text
+        if tsNode.NamedChildCount > 1
+            g.label := tsNode.GetNamedChild(1).Text
 
         parent.children.Push(g)
         return g
