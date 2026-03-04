@@ -311,25 +311,25 @@ class IRSymbolTable {
      * E.g. "myclass.mymethod", "myfunc", "myclass.myprop"
      * @type {Map}
      */
-    _symbols := Map()
+    _symbols := (m := Map(), m.CaseSense := false, m)
 
     /**
      * Top-level functions.
      * @type {Map}
      */
-    functions := Map()
+    functions := (m := Map(), m.CaseSense := false, m)
 
     /**
      * Top-level classes.
      * @type {Map}
      */
-    classes := Map()
+    classes := (m := Map(), m.CaseSense := false, m)
 
     /**
      * Labels.
      * @type {Map}
      */
-    labels := Map()
+    labels := (m := Map(), m.CaseSense := false, m)
 
     /**
      * Register a symbol in the table.
@@ -338,7 +338,7 @@ class IRSymbolTable {
      * @param {IRSymbol} symbol the symbol to register
      */
     Register(fullyQualifiedName, symbol) {
-        key := StrLower(fullyQualifiedName)
+        key := Trim(StrLower(fullyQualifiedName))
         this._symbols[key] := symbol
 
         switch symbol.kind {
@@ -355,7 +355,7 @@ class IRSymbolTable {
      * @returns {IRSymbol | String} the symbol, or "" if not found
      */
     Lookup(name) {
-        key := StrLower(name)
+        key := Trim(StrLower(name))
         return this._symbols.Has(key) ? this._symbols[key] : ""
     }
 
@@ -365,7 +365,7 @@ class IRSymbolTable {
      * @param {String} name the name to check
      * @returns {Boolean}
      */
-    Has(name) => this._symbols.Has(StrLower(name))
+    Has(name) => this._symbols.Has(Trim(StrLower(name)))
 
     /**
      * Record that an IR node references a symbol (a read site).
@@ -475,6 +475,16 @@ class IRSymbolTable {
                 errSym := this.Lookup(errorType)
                 if errSym != "" && !errSym.isLive
                     worklist.Push(errSym)
+            }
+        }
+
+        if node is IR.MemberAccess {
+            this._CollectReferencesInto(node.object, worklist)
+        }
+
+        if node is IR.Block {
+            for bodyNode in node.body {
+                this._CollectReferencesInto(bodyNode, worklist)
             }
         }
 
