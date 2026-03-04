@@ -135,6 +135,16 @@ class TreeShaker {
                 if targetSym != ""
                     this._AddEntry(entryPoints, seen, targetSym)
             }
+            else if !node.isDynamic {
+                ; Unresolved non-dynamic call — warn unless it's a built-in
+                try calleeName := node.callee.GetText()
+                if IsSet(calleeName) {
+                    try builtin := %calleeName%
+                    if !IsSet(builtin) || !((builtin is Func) && builtin.IsBuiltIn)
+                        Log.Warn(Format("Call target '{1}' is not resolved and not a built-in", calleeName))
+                }
+            }
+
             if node.isDynamic
                 Log.Warn(Format("Dynamic call detected — cannot resolve for tree-shaking: {1}",
                     node.HasOwnProp("tsNode") ? node.tsNode.Text : "(unknown)"))

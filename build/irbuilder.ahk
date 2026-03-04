@@ -1771,6 +1771,38 @@ class IRBuilder {
         ; Recurse into all children
         for child in node.children
             this._ResolveReferences(child)
+
+        ; After children are resolved, resolve call targets via function namespace
+        if node is IR.CallExpr
+            this._ResolveCallTarget(node)
+    }
+
+    /**
+     * Resolve a CallExpr's target by looking up the callee in the function
+     * namespace (symbol table). In AHK v2, `Foo()` resolves to function `Foo`
+     * regardless of variable scope — functions have their own namespace.
+     *
+     * @param {IR.CallExpr} callNode
+     */
+    _ResolveCallTarget(callNode) {
+        if callNode.isDynamic || !callNode.HasOwnProp("callee")
+            return
+
+        ; TODO resolve the whole callee chain for member access calls (obj.Method())
+        ; TODO if callee is a class, search it for a static Call method, add a reference to that, and increment its callCount
+        if callNode.callee is IR.Identifier {
+            ; In AHK v2, function calls resolve through the function namespace,
+            ; not variable scope. Look up in the symbol table directly.
+            sym := this.symbolTable.Lookup(callNode.callee.name)
+
+            if sym && sym.HasOwnProp("node") {
+                callNode.resolvedTarget := sym.node
+
+                ; TODO if not a function increment "Call" method call count
+                if(sym.kind == "function")
+                    sym.callCount++
+            }
+        }
     }
 
     /**
