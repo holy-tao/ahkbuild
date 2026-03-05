@@ -1,0 +1,3 @@
+[submodule "tests/YUnit"]
+	path = tests/YUnit
+	url = git@github.com:holy-tao/YUnit.git
