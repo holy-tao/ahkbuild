@@ -390,29 +390,37 @@ class IRBuilder {
             case "identifier":
                 param.name := tsNode.Text
             case "byref_param":
+                ; Grammar: "&" field("param", _param)
                 param.isByRef := true
-                ; The identifier is a named child
-                nameNode := this._FindNamedChild(tsNode, "identifier")
-                param.name := nameNode ? nameNode.Text : tsNode.Text
-            case "default_param":
-                ; Has an identifier and a default value
-                nameNode := this._FindNamedChild(tsNode, "identifier")
-                param.name := nameNode ? nameNode.Text : ""
-                ; Default value is the expression after :=
-                ; Walk named children to find the expression
-                j := 0
-                while j < tsNode.NamedChildCount {
-                    child := tsNode.GetNamedChild(j)
-                    if child.Type != "identifier" {
-                        param.default := this._BuildNode(param, child, scope)
-                        break
+                innerNode := tsNode.GetChildByFieldName("param")
+                if !innerNode.IsNull {
+                    ; Inner param can be identifier, optional_param, or default_param
+                    if innerNode.Type == "identifier"
+                        param.name := innerNode.Text
+                    else if innerNode.Type == "default_param" {
+                        nameNode := innerNode.GetChildByFieldName("name")
+                        param.name := nameNode.IsNull ? "" : nameNode.Text
+                        valNode := innerNode.GetChildByFieldName("value")
+                        if !valNode.IsNull
+                            param.default := this._BuildNode(param, valNode, scope)
+                    } else {
+                        nameNode := this._FindNamedChild(innerNode, "identifier")
+                        param.name := nameNode ? nameNode.Text : innerNode.Text
                     }
-                    j++
-                }
+                } else
+                    param.name := tsNode.Text
+            case "default_param":
+                ; Grammar: field("name", identifier) ":=" field("value", expr)
+                nameNode := tsNode.GetChildByFieldName("name")
+                param.name := nameNode.IsNull ? "" : nameNode.Text
+                valNode := tsNode.GetChildByFieldName("value")
+                if !valNode.IsNull
+                    param.default := this._BuildNode(param, valNode, scope)
             case "variadic_param":
+                ; Grammar: field("name", identifier) "*"
                 param.isVariadic := true
-                nameNode := this._FindNamedChild(tsNode, "identifier")
-                param.name := nameNode ? nameNode.Text : tsNode.Text
+                nameNode := tsNode.GetChildByFieldName("name")
+                param.name := nameNode.IsNull ? tsNode.Text : nameNode.Text
             case "optional_param":
                 param.isOptional := true
                 nameNode := this._FindNamedChild(tsNode, "identifier")
@@ -467,16 +475,10 @@ class IRBuilder {
         ; Create class scope
         cls.classScope := IRScope("class", cls, scope)
 
-        ; Walk class_body children
-        i := 0
-        while i < tsNode.NamedChildCount {
-            child := tsNode.GetNamedChild(i)
-            if child.Type == "class_body" {
-                this._BuildClassBody(cls, child, cls.classScope)
-                break
-            }
-            i++
-        }
+        ; Class body from "body" field
+        bodyNode := tsNode.GetChildByFieldName("body")
+        if !bodyNode.IsNull
+            this._BuildClassBody(cls, bodyNode, cls.classScope)
 
         ; Register symbol
         if cls.name != "" {
@@ -526,42 +528,37 @@ class IRBuilder {
     /**
      * Build an IR.Property or IR.Field from a property_declaration.
      *
+     * Grammar: optional(scope_identifier) field("name", identifier)
+     *          choice(_initializer, seq("=>", getter), property_declaration_block)
+     *
      * Decides based on structure:
      *   - If it has a getter/setter block or => arrow → IR.Property
      *   - If it's just `name := value` → IR.Field
      */
     _BuildPropertyOrField(parent, tsNode, scope) {
-        ; Determine property name and scope qualifier
-        propName := ""
+        ; Name from field
+        nameNode := tsNode.GetChildByFieldName("name")
+        propName := nameNode.IsNull ? "" : nameNode.Text
+
+        ; Scope qualifier (optional scope_identifier before name)
         propScope := ""
+        scopeNode := this._FindNamedChild(tsNode, "scope_identifier")
+        if scopeNode
+            propScope := scopeNode.Text
+
+        ; Determine form by checking for getter/property_declaration_block children
         hasArrow := false
         hasBlock := false
-
         i := 0
         while i < tsNode.NamedChildCount {
             child := tsNode.GetNamedChild(i)
             switch child.Type {
-                case "scope_identifier":
-                    propScope := child.Text
-                case "identifier":
-                    propName := child.Text
                 case "property_declaration_block":
                     hasBlock := true
                 case "getter", "setter":
-                    hasBlock := true
+                    hasArrow := true
             }
             i++
-        }
-
-        ; Check for shorthand arrow getter: look for => in anonymous children
-        j := 0
-        while j < tsNode.ChildCount {
-            child := tsNode.GetChild(j)
-            if !child.IsNamed && child.Text == "=>" {
-                hasArrow := true
-                break
-            }
-            j++
         }
 
         ; If it has a getter/setter block or arrow → Property
@@ -581,43 +578,25 @@ class IRBuilder {
         prop.scope := propScope
 
         if isShorthandArrow {
-            ; Shorthand Prop => expr — the expression is among the named children
+            ; Shorthand Prop => expr — aliased as a "getter" named child
             prop.isGetterOnly := true
             prop.isArrowGetter := true
-            ; Find the expression (last named child that isn't scope_identifier or identifier)
-            i := 0
-            while i < tsNode.NamedChildCount {
-                child := tsNode.GetNamedChild(i)
-                if child.Type != "scope_identifier" && child.Type != "identifier" {
-                    ; Build a synthetic function for the getter
-                    getter := IR.Function(prop, tsNode)
-                    getter.name := propName
-                    getter.isArrow := true
-                    getter.isMethod := true
-                    getter.body := this._BuildNode(getter, child, scope)
-                    getter.localScope := IRScope("function", getter, scope)
-                    prop.getter := getter
-                    prop.children.Push(getter)
-                    break
-                }
-                i++
+            getterChild := this._FindNamedChild(tsNode, "getter")
+            if getterChild {
+                getter := IR.Function(prop, tsNode)
+                getter.name := propName
+                getter.isArrow := true
+                getter.isMethod := true
+                getter.body := this._BuildNode(getter, getterChild, scope)
+                getter.localScope := IRScope("function", getter, scope)
+                prop.getter := getter
+                prop.children.Push(getter)
             }
         } else {
             ; Has a property_declaration_block with getter/setter
-            i := 0
-            while i < tsNode.NamedChildCount {
-                child := tsNode.GetNamedChild(i)
-                if child.Type == "property_declaration_block" {
-                    this._BuildGetterSetter(prop, child, scope)
-                    break
-                }
-                ; Also handle getter/setter as direct children
-                if child.Type == "getter"
-                    this._BuildGetterNode(prop, child, scope)
-                else if child.Type == "setter"
-                    this._BuildSetterNode(prop, child, scope)
-                i++
-            }
+            blockChild := this._FindNamedChild(tsNode, "property_declaration_block")
+            if blockChild
+                this._BuildGetterSetter(prop, blockChild, scope)
         }
 
         ; Register as property symbol
@@ -723,23 +702,18 @@ class IRBuilder {
 
     /**
      * Build an IR.Field (simple property := value).
+     *
+     * Grammar: _initializer is inline, so field("value", expr) propagates here.
      */
     _BuildField(parent, tsNode, scope, propName, propScope) {
         field := IR.Field(parent, tsNode)
         field.name := propName
         field.scope := propScope
 
-        ; Find the initializer expression (after :=)
-        ; Walk named children, skip scope_identifier and identifier
-        i := 0
-        while i < tsNode.NamedChildCount {
-            child := tsNode.GetNamedChild(i)
-            if child.Type != "scope_identifier" && child.Type != "identifier" {
-                field.initializer := this._BuildNode(field, child, scope)
-                break
-            }
-            i++
-        }
+        ; The "value" field comes from the inline _initializer rule
+        valNode := tsNode.GetChildByFieldName("value")
+        if !valNode.IsNull
+            field.initializer := this._BuildNode(field, valNode, scope)
 
         parent.children.Push(field)
         return field
@@ -747,21 +721,19 @@ class IRBuilder {
 
     /**
      * Build an IR.VarDecl from a variable_declaration.
+     *
+     * Grammar: field("scope", scope_identifier) field("name", identifier)
      */
     _BuildVarDecl(parent, tsNode, scope) {
         decl := IR.VarDecl(parent, tsNode)
 
-        i := 0
-        while i < tsNode.NamedChildCount {
-            child := tsNode.GetNamedChild(i)
-            switch child.Type {
-                case "scope_identifier":
-                    decl.declScope := child.Text
-                case "identifier":
-                    decl.name := child.Text
-            }
-            i++
-        }
+        scopeNode := tsNode.GetChildByFieldName("scope")
+        if !scopeNode.IsNull
+            decl.declScope := scopeNode.Text
+
+        nameNode := tsNode.GetChildByFieldName("name")
+        if !nameNode.IsNull
+            decl.name := nameNode.Text
 
         ; Register the declaration in the scope
         if decl.name != ""
@@ -811,8 +783,8 @@ class IRBuilder {
 
     /**
      * Build an IR.BinaryExpr from an assignment_operation.
-     * Assignment has `left` and `right` fields but no `operator` field.
-     * The operator is an anonymous child between left and right.
+     * Assignment has `left` and `right` fields. The operator is the
+     * `assignment_operator` named child.
      */
     _BuildAssignment(parent, tsNode, scope) {
         expr := IR.BinaryExpr(parent, tsNode)
@@ -825,25 +797,9 @@ class IRBuilder {
         if !rightNode.IsNull
             expr.right := this._BuildNode(expr, rightNode, scope)
 
-        ; Find the operator: anonymous child between left and right
-        i := 0
-        while i < tsNode.ChildCount {
-            child := tsNode.GetChild(i)
-            if !child.IsNamed
-                && !leftNode.IsNull && child.StartByte > leftNode.EndByte
-                && !rightNode.IsNull && child.EndByte <= rightNode.StartByte {
-                text := child.Text
-                if text != "" {
-                    expr.operator := text
-                    break
-                }
-            }
-            i++
-        }
-
-        ; Fallback
-        if expr.operator == ""
-            expr.operator := ":="
+        ; The operator is the assignment_operator named child
+        opNode := this._FindNamedChild(tsNode, "assignment_operator")
+        expr.operator := opNode ? opNode.Text : ":="
 
         parent.children.Push(expr)
         return expr
@@ -870,21 +826,18 @@ class IRBuilder {
 
     /**
      * Build an IR.TernaryExpr.
-     * Tree-sitter ternary_expression has: condition (first named child),
-     * true_branch field, false_branch field.
+     *
+     * Grammar: field("condition", expr) "?" field("true_branch", expr) ":" field("false_branch", expr)
      */
     _BuildTernaryExpr(parent, tsNode, scope) {
         expr := IR.TernaryExpr(parent, tsNode)
 
+        condNode := tsNode.GetChildByFieldName("condition")
         trueBranch := tsNode.GetChildByFieldName("true_branch")
         falseBranch := tsNode.GetChildByFieldName("false_branch")
 
-        ; Condition is the first named child (before the ?)
-        if tsNode.NamedChildCount > 0 {
-            firstChild := tsNode.GetNamedChild(0)
-            expr.condition := this._BuildNode(expr, firstChild, scope)
-        }
-
+        if !condNode.IsNull
+            expr.condition := this._BuildNode(expr, condNode, scope)
         if !trueBranch.IsNull
             expr.trueBranch := this._BuildNode(expr, trueBranch, scope)
         if !falseBranch.IsNull
@@ -896,6 +849,8 @@ class IRBuilder {
 
     /**
      * Build an IR.CallExpr from function_call or call_statement.
+     *
+     * Grammar: field("function", expr) "(" field("arguments", optional(arg_sequence)) ")"
      */
     _BuildCallExpr(parent, tsNode, scope, isCommandStyle := false) {
         call := IR.CallExpr(parent, tsNode)
@@ -910,16 +865,10 @@ class IRBuilder {
                 call.isDynamic := true
         }
 
-        ; Arguments — find arg_sequence among children
-        i := 0
-        while i < tsNode.NamedChildCount {
-            child := tsNode.GetNamedChild(i)
-            if child.Type == "arg_sequence" {
-                this._BuildArgs(call, child, scope)
-                break
-            }
-            i++
-        }
+        ; Arguments from "arguments" field
+        argsNode := tsNode.GetChildByFieldName("arguments")
+        if !argsNode.IsNull
+            this._BuildArgs(call, argsNode, scope)
 
         parent.children.Push(call)
         return call
@@ -963,6 +912,8 @@ class IRBuilder {
 
     /**
      * Build an IR.IndexAccess.
+     *
+     * Grammar: field("object", expr) "[" field("arguments", optional(arg_sequence)) "]"
      */
     _BuildIndexAccess(parent, tsNode, scope) {
         ia := IR.IndexAccess(parent, tsNode)
@@ -971,21 +922,16 @@ class IRBuilder {
         if !objNode.IsNull
             ia.object := this._BuildNode(ia, objNode, scope)
 
-        ; Arguments in arg_sequence
-        i := 0
-        while i < tsNode.NamedChildCount {
-            child := tsNode.GetNamedChild(i)
-            if child.Type == "arg_sequence" {
-                j := 0
-                while j < child.NamedChildCount {
-                    argChild := child.GetNamedChild(j)
-                    arg := this._BuildNode(ia, argChild, scope)
-                    ia.args.Push(arg)
-                    j++
-                }
-                break
+        ; Arguments from "arguments" field
+        argsNode := tsNode.GetChildByFieldName("arguments")
+        if !argsNode.IsNull {
+            j := 0
+            while j < argsNode.NamedChildCount {
+                argChild := argsNode.GetNamedChild(j)
+                arg := this._BuildNode(ia, argChild, scope)
+                ia.args.Push(arg)
+                j++
             }
-            i++
         }
 
         parent.children.Push(ia)
@@ -1052,6 +998,8 @@ class IRBuilder {
 
     /**
      * Build an IR.ObjectLiteral.
+     *
+     * Grammar: object_literal_member has field("key", ...) and field("value", ...)
      */
     _BuildObjectLiteral(parent, tsNode, scope) {
         obj := IR.ObjectLiteral(parent, tsNode)
@@ -1061,38 +1009,15 @@ class IRBuilder {
         while i < tsNode.NamedChildCount {
             child := tsNode.GetNamedChild(i)
             if child.Type == "object_literal_member" {
-                keyNode := "", valNode := ""
-                j := 0
-                while j < child.NamedChildCount {
-                    grandchild := child.GetNamedChild(j)
-                    if j == 0
-                        keyNode := this._BuildNode(obj, grandchild, scope)
-                    else
-                        valNode := this._BuildNode(obj, grandchild, scope)
-                    j++
-                }
-                if keyNode != ""
-                    obj.pairs.Push({key: keyNode, value: valNode})
+                this._BuildObjectMember(obj, child, scope)
             }
-            ; Handle object_literal_member_sequence
+            ; Handle object_literal_member_sequence (inline _object_literal_member_sequence)
             else if child.Type == "object_literal_member_sequence" {
                 k := 0
                 while k < child.NamedChildCount {
                     member := child.GetNamedChild(k)
-                    if member.Type == "object_literal_member" {
-                        keyNode := "", valNode := ""
-                        j := 0
-                        while j < member.NamedChildCount {
-                            grandchild := member.GetNamedChild(j)
-                            if j == 0
-                                keyNode := this._BuildNode(obj, grandchild, scope)
-                            else
-                                valNode := this._BuildNode(obj, grandchild, scope)
-                            j++
-                        }
-                        if keyNode != ""
-                            obj.pairs.Push({key: keyNode, value: valNode})
-                    }
+                    if member.Type == "object_literal_member"
+                        this._BuildObjectMember(obj, member, scope)
                     k++
                 }
             }
@@ -1104,16 +1029,30 @@ class IRBuilder {
     }
 
     /**
+     * Build a single object literal member using field-based access.
+     */
+    _BuildObjectMember(obj, memberNode, scope) {
+        keyTsNode := memberNode.GetChildByFieldName("key")
+        valTsNode := memberNode.GetChildByFieldName("value")
+
+        if !keyTsNode.IsNull {
+            keyNode := this._BuildNode(obj, keyTsNode, scope)
+            valNode := !valTsNode.IsNull ? this._BuildNode(obj, valTsNode, scope) : ""
+            obj.pairs.Push({key: keyNode, value: valNode})
+        }
+    }
+
+    /**
      * Build an IR.DerefExpr (%expr%).
+     *
+     * Grammar: "%" field("operand", expr) "%"
      */
     _BuildDerefExpr(parent, tsNode, scope) {
         deref := IR.DerefExpr(parent, tsNode)
 
-        ; The inner expression is the named child
-        if tsNode.NamedChildCount > 0 {
-            child := tsNode.GetNamedChild(0)
-            deref.inner := this._BuildNode(deref, child, scope)
-        }
+        operandNode := tsNode.GetChildByFieldName("operand")
+        if !operandNode.IsNull
+            deref.inner := this._BuildNode(deref, operandNode, scope)
 
         parent.children.Push(deref)
         return deref
@@ -1121,14 +1060,15 @@ class IRBuilder {
 
     /**
      * Build an IR.VarRefExpr (&var).
+     *
+     * Grammar: "&" field("operand", expr)
      */
     _BuildVarRefExpr(parent, tsNode, scope) {
         vr := IR.VarRefExpr(parent, tsNode)
 
-        if tsNode.NamedChildCount > 0 {
-            child := tsNode.GetNamedChild(0)
-            vr.operand := this._BuildNode(vr, child, scope)
-        }
+        operandNode := tsNode.GetChildByFieldName("operand")
+        if !operandNode.IsNull
+            vr.operand := this._BuildNode(vr, operandNode, scope)
 
         parent.children.Push(vr)
         return vr
@@ -1136,35 +1076,17 @@ class IRBuilder {
 
     /**
      * Build an IR.FatArrow (anonymous arrow function as expression).
+     *
+     * Grammar: function_head "=>" field("body", expr)
      */
     _BuildFatArrow(parent, tsNode, scope) {
         arrow := IR.FatArrow(parent, tsNode)
         arrow.localScope := IRScope("arrow", arrow, scope)
 
-        ; Parameters — look for param_sequence
-        i := 0
-        while i < tsNode.NamedChildCount {
-            child := tsNode.GetNamedChild(i)
-            if child.Type == "param_sequence" {
-                j := 0
-                while j < child.NamedChildCount {
-                    paramChild := child.GetNamedChild(j)
-                    param := this._BuildParam(arrow, paramChild, arrow.localScope)
-                    if param {
-                        arrow.params.Push(param)
-                        arrow.children.Push(param)
-
-                        sym := IRSymbol(param.name, "param")
-                        sym.node := param
-                        sym.scope := arrow.localScope
-                        arrow.localScope.Define(param.name, sym)
-                    }
-                    j++
-                }
-                break
-            }
-            i++
-        }
+        ; Parameters — find function_head, then delegate to _BuildParams
+        headNode := tsNode.GetChildByFieldName("head")
+        if !headNode.IsNull
+            this._BuildFatArrowParams(arrow, headNode, arrow.localScope)
 
         ; Body — the expression after =>
         bodyNode := tsNode.GetChildByFieldName("body")
@@ -1173,6 +1095,38 @@ class IRBuilder {
 
         parent.children.Push(arrow)
         return arrow
+    }
+
+    /**
+     * Build parameters for a fat arrow function, similar to _BuildParams
+     * but stores on the FatArrow node.
+     */
+    _BuildFatArrowParams(arrow, headNode, fnScope) {
+        ; Find param_sequence inside function_head
+        paramContainer := headNode
+        if headNode.Type == "function_head" {
+            ps := this._FindNamedChild(headNode, "param_sequence")
+            if ps
+                paramContainer := ps
+        }
+        if paramContainer.Type != "param_sequence"
+            return
+
+        i := 0
+        while i < paramContainer.NamedChildCount {
+            child := paramContainer.GetNamedChild(i)
+            param := this._BuildParam(arrow, child, fnScope)
+            if param {
+                arrow.params.Push(param)
+                arrow.children.Push(param)
+
+                sym := IRSymbol(param.name, "param")
+                sym.node := param
+                sym.scope := fnScope
+                fnScope.Define(param.name, sym)
+            }
+            i++
+        }
     }
 
     /**
@@ -1202,27 +1156,30 @@ class IRBuilder {
 
     /**
      * Build an IR.IfStmt from an if_statement.
+     *
+     * Grammar: if field("condition", expr) field("body", block|stmt) field("else_block", repeat(else_statement))
      */
     _BuildIf(parent, tsNode, scope) {
         ifNode := IR.IfStmt(parent, tsNode)
 
-        ; Walk children to find condition, then-block, and else
-        ; Structure: if keyword, condition expr, block, optional else_statement
-        foundCondition := false
-        i := 0
-        while i < tsNode.NamedChildCount {
-            child := tsNode.GetNamedChild(i)
-            if child.Type == "block" {
-                ifNode.thenBody := this._BuildBlock(ifNode, child, scope)
-            } else if child.Type == "else_statement" {
-                ifNode.elseBody := this._BuildElse(ifNode, child, scope)
-            } else if !foundCondition {
-                ; First non-block, non-else named child is the condition
-                ifNode.condition := this._BuildNode(ifNode, child, scope)
-                foundCondition := true
-            }
-            i++
+        ; Condition
+        condNode := tsNode.GetChildByFieldName("condition")
+        if !condNode.IsNull
+            ifNode.condition := this._BuildNode(ifNode, condNode, scope)
+
+        ; Body (then-block)
+        bodyNode := tsNode.GetChildByFieldName("body")
+        if !bodyNode.IsNull {
+            if bodyNode.Type == "block"
+                ifNode.thenBody := this._BuildBlock(ifNode, bodyNode, scope)
+            else
+                ifNode.thenBody := this._BuildNode(ifNode, bodyNode, scope)
         }
+
+        ; Else block(s)
+        elseNode := tsNode.GetChildByFieldName("else_block")
+        if !elseNode.IsNull
+            ifNode.elseBody := this._BuildElse(ifNode, elseNode, scope)
 
         parent.children.Push(ifNode)
         return ifNode
@@ -1231,42 +1188,40 @@ class IRBuilder {
     /**
      * Build the else branch of an if statement.
      * Can be: else { block } or else if (condition) { ... }
+     *
+     * Grammar: else field("body", choice(if_statement, block, stmt))
      */
     _BuildElse(parent, tsNode, scope) {
-        ; Look inside the else_statement for if_statement or block
-        i := 0
-        while i < tsNode.NamedChildCount {
-            child := tsNode.GetNamedChild(i)
-            if child.Type == "if_statement"
-                return this._BuildIf(parent, child, scope)
-            else if child.Type == "block"
-                return this._BuildBlock(parent, child, scope)
-            i++
+        bodyNode := tsNode.GetChildByFieldName("body")
+        if !bodyNode.IsNull {
+            if bodyNode.Type == "if_statement"
+                return this._BuildIf(parent, bodyNode, scope)
+            else if bodyNode.Type == "block"
+                return this._BuildBlock(parent, bodyNode, scope)
+            else
+                return this._BuildNode(parent, bodyNode, scope)
         }
-        ; Fallback: single statement else
-        if tsNode.NamedChildCount > 0
-            return this._BuildNode(parent, tsNode.GetNamedChild(0), scope)
         return this._BuildOpaque(parent, tsNode)
     }
 
     /**
      * Build an IR.WhileStmt.
+     *
+     * Grammar: while field("condition", expr) field("body", stmt)
      */
     _BuildWhile(parent, tsNode, scope) {
         w := IR.WhileStmt(parent, tsNode)
 
-        ; Condition is first named expression child, body is via field
-        foundCondition := false
-        i := 0
-        while i < tsNode.NamedChildCount {
-            child := tsNode.GetNamedChild(i)
-            if child.Type == "block" {
-                w.body := this._BuildBlock(w, child, scope)
-            } else if !foundCondition {
-                w.condition := this._BuildNode(w, child, scope)
-                foundCondition := true
-            }
-            i++
+        condNode := tsNode.GetChildByFieldName("condition")
+        if !condNode.IsNull
+            w.condition := this._BuildNode(w, condNode, scope)
+
+        bodyNode := tsNode.GetChildByFieldName("body")
+        if !bodyNode.IsNull {
+            if bodyNode.Type == "block"
+                w.body := this._BuildBlock(w, bodyNode, scope)
+            else
+                w.body := this._BuildNode(w, bodyNode, scope)
         }
 
         parent.children.Push(w)
@@ -1275,37 +1230,28 @@ class IRBuilder {
 
     /**
      * Build an IR.ForStmt.
+     *
+     * Grammar: for field("head", _for_params) field("body", stmt) optional(field("else_block", else_statement))
+     * _for_params (inline): field("iterator", id) [, field("iterator", id)] in field("iterable", expr)
      */
     _BuildFor(parent, tsNode, scope) {
         f := IR.ForStmt(parent, tsNode)
 
-        ; For loop: for iterator_vars in iterable { body }
-        ; head field contains the iterators and iterable
-        ; body field contains the loop body
-        headNode := tsNode.GetChildByFieldName("head")
         bodyNode := tsNode.GetChildByFieldName("body")
 
-        ; Parse head: identifiers are iterators, last expression is iterable
-        if !headNode.IsNull {
-            ; Walk head's named children
-            identifiers := []
-            lastExpr := unset
-            i := 0
-            while i < headNode.NamedChildCount {
-                child := headNode.GetNamedChild(i)
-                if child.Type == "identifier" {
-                    id := this._BuildIdentifier(f, child)
-                    identifiers.Push(id)
-                } else {
-                    lastExpr := this._BuildNode(f, child, scope)
-                }
-                i++
+        ; Iterators and iterable — from inline _for_params fields on for_statement
+        ; Collect all children with "iterator" field name, and the "iterable" field
+        i := 0
+        while i < tsNode.ChildCount {
+            fieldName := tsNode.GetFieldNameForChild(i)
+            child := tsNode.GetChild(i)
+            if fieldName == "iterator" && child.IsNamed {
+                id := this._BuildIdentifier(f, child)
+                f.iterators.Push(id)
+            } else if fieldName == "iterable" && child.IsNamed {
+                f.iterable := this._BuildNode(f, child, scope)
             }
-            ; If head itself is the iterable container, the identifiers
-            ; came first and the last expression is the iterable
-            f.iterators := identifiers
-            if IsSet(lastExpr)
-                f.iterable := lastExpr
+            i++
         }
 
         if !bodyNode.IsNull {
@@ -1315,16 +1261,10 @@ class IRBuilder {
                 f.body := this._BuildNode(f, bodyNode, scope)
         }
 
-        ; Optional else
-        i := 0
-        while i < tsNode.NamedChildCount {
-            child := tsNode.GetNamedChild(i)
-            if child.Type == "else_statement" {
-                f.elseBody := this._BuildElse(f, child, scope)
-                break
-            }
-            i++
-        }
+        ; Optional else from "else_block" field
+        elseNode := tsNode.GetChildByFieldName("else_block")
+        if !elseNode.IsNull
+            f.elseBody := this._BuildElse(f, elseNode, scope)
 
         parent.children.Push(f)
         return f
@@ -1332,6 +1272,8 @@ class IRBuilder {
 
     /**
      * Build an IR.LoopStmt.
+     *
+     * Grammar: loop field("head", optional(...)) field("body", block|stmt) optional(field("until_block", until_statement))
      */
     _BuildLoop(parent, tsNode, scope) {
         l := IR.LoopStmt(parent, tsNode)
@@ -1364,16 +1306,13 @@ class IRBuilder {
                 l.body := this._BuildNode(l, bodyNode, scope)
         }
 
-        ; Check for until clause
-        i := 0
-        while i < tsNode.NamedChildCount {
-            child := tsNode.GetNamedChild(i)
-            if child.Type == "until_statement" {
-                if child.NamedChildCount > 0
-                    l.untilCondition := this._BuildNode(l, child.GetNamedChild(0), scope)
-                break
-            }
-            i++
+        ; Until clause from "until_block" field
+        untilNode := tsNode.GetChildByFieldName("until_block")
+        if !untilNode.IsNull {
+            ; until_statement has field("condition", expr)
+            condNode := untilNode.GetChildByFieldName("condition")
+            if !condNode.IsNull
+                l.untilCondition := this._BuildNode(l, condNode, scope)
         }
 
         parent.children.Push(l)
@@ -1414,27 +1353,24 @@ class IRBuilder {
 
     /**
      * Build an IR.CaseClause from a case_clause or default_clause.
+     *
+     * Grammar: case_clause has field("value", ...) and field("body", ...)
+     *          default_clause has field("body", ...)
      */
     _BuildCase(parent, tsNode, scope, isDefault := false) {
         c := IR.CaseClause(parent, tsNode)
         c.isDefault := isDefault
 
-        ; Walk named children
-        ; For case_clause: first children are the value expressions, rest are statements
-        ; For default_clause: all children are statements
-        passedColon := false
+        ; Use field names to distinguish values from body statements
         i := 0
         while i < tsNode.ChildCount {
+            fieldName := tsNode.GetFieldNameForChild(i)
             child := tsNode.GetChild(i)
-            if !child.IsNamed {
-                if child.Text == ":"
-                    passedColon := true
-            } else if passedColon {
-                ; Statement after the colon
-                c.body.Push(this._BuildNode(c, child, scope))
-            } else if !isDefault {
-                ; Value expression before the colon
-                c.values.Push(this._BuildNode(c, child, scope))
+            if child.IsNamed {
+                if fieldName == "value"
+                    c.values.Push(this._BuildNode(c, child, scope))
+                else if fieldName == "body"
+                    c.body.Push(this._BuildNode(c, child, scope))
             }
             i++
         }
@@ -1445,6 +1381,10 @@ class IRBuilder {
 
     /**
      * Build an IR.TryStmt.
+     *
+     * Grammar: try field("body", choice(seq(block, catch*, else?, finally?), expr))
+     * The "body" field encompasses the entire structure; iterate by type for sub-parts.
+     * catch_clause and finally_clause have their own "body" fields.
      */
     _BuildTry(parent, tsNode, scope) {
         t := IR.TryStmt(parent, tsNode)
@@ -1460,23 +1400,19 @@ class IRBuilder {
                 case "catch_clause":
                     t.catchClauses.Push(this._BuildCatch(t, child, scope))
                 case "else_statement":
-                    if child.NamedChildCount > 0 {
-                        elseChild := child.GetNamedChild(0)
-                        if elseChild.Type == "block"
-                            t.elseBody := this._BuildBlock(t, elseChild, scope)
+                    ; else_statement has field("body", ...)
+                    elseBody := child.GetChildByFieldName("body")
+                    if !elseBody.IsNull {
+                        if elseBody.Type == "block"
+                            t.elseBody := this._BuildBlock(t, elseBody, scope)
                         else
-                            t.elseBody := this._BuildNode(t, elseChild, scope)
+                            t.elseBody := this._BuildNode(t, elseBody, scope)
                     }
                 case "finally_clause":
-                    j := 0
-                    while j < child.NamedChildCount {
-                        fc := child.GetNamedChild(j)
-                        if fc.Type == "block" {
-                            t.finallyBody := this._BuildBlock(t, fc, scope)
-                            break
-                        }
-                        j++
-                    }
+                    ; finally_clause has field("body", block)
+                    finallyBody := child.GetChildByFieldName("body")
+                    if !finallyBody.IsNull
+                        t.finallyBody := this._BuildBlock(t, finallyBody, scope)
             }
             i++
         }
@@ -1487,51 +1423,27 @@ class IRBuilder {
 
     /**
      * Build an IR.CatchClause from a catch_clause.
+     *
+     * Grammar: catch field("head", _catch_params?) field("body", block)
+     * _catch_params: field("type", identifier) optional(as field("variable", identifier))
      */
     _BuildCatch(parent, tsNode, scope) {
         c := IR.CatchClause(parent, tsNode)
 
-        i := 0
-        while i < tsNode.NamedChildCount {
-            child := tsNode.GetNamedChild(i)
-            switch child.Type {
-                case "identifier":
-                    ; Could be error type or variable name depending on position
-                    ; If there's an "as" keyword before it, it's the variable name
-                    c.errorTypes.Push(child.Text)
-                case "block":
-                    c.body := this._BuildBlock(c, child, scope)
-            }
-            i++
-        }
+        ; Error type from the "type" field (propagated from inline _catch_params)
+        typeNode := tsNode.GetChildByFieldName("type")
+        if !typeNode.IsNull
+            c.errorTypes.Push(typeNode.Text)
 
-        ; The last identifier before the block might be the variable name
-        ; AHK catch syntax: catch ErrorType as varName { }
-        ; Check for "as" in anonymous children
-        j := 0
-        while j < tsNode.ChildCount {
-            child := tsNode.GetChild(j)
-            if !child.IsNamed && StrLower(child.Text) == "as" {
-                ; Next named sibling is the variable name
-                if j + 1 < tsNode.ChildCount {
-                    ; Find next named child
-                    k := j + 1
-                    while k < tsNode.ChildCount {
-                        next := tsNode.GetChild(k)
-                        if next.IsNamed && next.Type == "identifier" {
-                            c.varName := next.Text
-                            ; Remove it from errorTypes if it was added
-                            if c.errorTypes.Length > 0 && c.errorTypes[c.errorTypes.Length] == c.varName
-                                c.errorTypes.Pop()
-                            break
-                        }
-                        k++
-                    }
-                }
-                break
-            }
-            j++
-        }
+        ; Variable name from the "variable" field
+        varNode := tsNode.GetChildByFieldName("variable")
+        if !varNode.IsNull
+            c.varName := varNode.Text
+
+        ; Body block
+        bodyNode := tsNode.GetChildByFieldName("body")
+        if !bodyNode.IsNull
+            c.body := this._BuildBlock(c, bodyNode, scope)
 
         parent.children.Push(c)
         return c
@@ -1539,13 +1451,15 @@ class IRBuilder {
 
     /**
      * Build an IR.ReturnStmt.
+     *
+     * Grammar: return field("value", optional(expr))
      */
     _BuildReturn(parent, tsNode, scope) {
         ret := IR.ReturnStmt(parent, tsNode)
 
-        ; First child is the return itself, second is the return value, if there is one
-        loop tsNode.NamedChildCount > 1
-            ret.value := this._BuildNode(ret, tsNode.GetNamedChild(1), scope)
+        valNode := tsNode.GetChildByFieldName("value")
+        if !valNode.IsNull
+            ret.value := this._BuildNode(ret, valNode, scope)
 
         parent.children.Push(ret)
         return ret
@@ -1553,12 +1467,15 @@ class IRBuilder {
 
     /**
      * Build an IR.BreakStmt.
+     *
+     * Grammar: break field("looplabel", optional(identifier|string_literal))
      */
     _BuildBreak(parent, tsNode) {
         b := IR.BreakStmt(parent, tsNode)
 
-        if tsNode.NamedChildCount > 1
-            b.label := tsNode.GetNamedChild(1).Text
+        labelNode := tsNode.GetChildByFieldName("looplabel")
+        if !labelNode.IsNull
+            b.label := labelNode.Text
 
         parent.children.Push(b)
         return b
@@ -1566,12 +1483,15 @@ class IRBuilder {
 
     /**
      * Build an IR.ContinueStmt.
+     *
+     * Grammar: continue field("looplabel", optional(identifier|string_literal))
      */
     _BuildContinue(parent, tsNode) {
         c := IR.ContinueStmt(parent, tsNode)
 
-        if tsNode.NamedChildCount > 1
-            c.label := tsNode.GetNamedChild(1).Text
+        labelNode := tsNode.GetChildByFieldName("looplabel")
+        if !labelNode.IsNull
+            c.label := labelNode.Text
 
         parent.children.Push(c)
         return c
@@ -1579,12 +1499,15 @@ class IRBuilder {
 
     /**
      * Build an IR.ThrowStmt.
+     *
+     * Grammar: throw field("thrown", expr)
      */
     _BuildThrow(parent, tsNode, scope) {
         t := IR.ThrowStmt(parent, tsNode)
 
-        if tsNode.NamedChildCount > 1
-            t.value := this._BuildNode(t, tsNode.GetNamedChild(1), scope)
+        thrownNode := tsNode.GetChildByFieldName("thrown")
+        if !thrownNode.IsNull
+            t.value := this._BuildNode(t, thrownNode, scope)
 
         parent.children.Push(t)
         return t
@@ -1592,12 +1515,15 @@ class IRBuilder {
 
     /**
      * Build an IR.GotoStmt.
+     *
+     * Grammar: goto field("label", expr)
      */
     _BuildGoto(parent, tsNode) {
         g := IR.GotoStmt(parent, tsNode)
 
-        if tsNode.NamedChildCount > 1
-            g.label := tsNode.GetNamedChild(1).Text
+        labelNode := tsNode.GetChildByFieldName("label")
+        if !labelNode.IsNull
+            g.label := labelNode.Text
 
         parent.children.Push(g)
         return g
@@ -1605,12 +1531,15 @@ class IRBuilder {
 
     /**
      * Build an IR.Label.
+     *
+     * Grammar: field("name", identifier) ":"
      */
     _BuildLabel(parent, tsNode, scope) {
         l := IR.Label(parent, tsNode)
 
-        if tsNode.NamedChildCount > 0
-            l.name := tsNode.GetNamedChild(0).Text
+        nameNode := tsNode.GetChildByFieldName("name")
+        if !nameNode.IsNull
+            l.name := nameNode.Text
 
         ; Register in symbol table
         if l.name != "" {
@@ -1654,6 +1583,8 @@ class IRBuilder {
 
     /**
      * Build an IR.Hotkey.
+     *
+     * Grammar: field("trigger", hotkey_trigger) "::" field("body", optional(...))
      */
     _BuildHotkey(parent, tsNode, scope) {
         hk := IR.Hotkey(parent, tsNode)
@@ -1662,17 +1593,12 @@ class IRBuilder {
         if !triggerNode.IsNull
             hk.trigger := triggerNode.Text
 
-        ; Body: everything after the trigger that isn't part of the trigger
-        i := 0
-        while i < tsNode.NamedChildCount {
-            child := tsNode.GetNamedChild(i)
-            if child.Type != "hotkey_trigger" {
-                if child.Type == "block"
-                    hk.body := this._BuildBlock(hk, child, scope)
-                else
-                    hk.body := this._BuildNode(hk, child, scope)
-            }
-            i++
+        bodyNode := tsNode.GetChildByFieldName("body")
+        if !bodyNode.IsNull {
+            if bodyNode.Type == "block"
+                hk.body := this._BuildBlock(hk, bodyNode, scope)
+            else
+                hk.body := this._BuildNode(hk, bodyNode, scope)
         }
 
         parent.children.Push(hk)
@@ -1681,6 +1607,8 @@ class IRBuilder {
 
     /**
      * Build an IR.Hotstring.
+     *
+     * Grammar: field("modifiers", ...) field("trigger", ...) "::" field("body", optional(...))
      */
     _BuildHotstring(parent, tsNode, scope) {
         hs := IR.Hotstring(parent, tsNode)
@@ -1693,17 +1621,9 @@ class IRBuilder {
         if !modNode.IsNull
             hs.modifiers := modNode.Text
 
-        ; Replacement: find replacement content
-        i := 0
-        while i < tsNode.NamedChildCount {
-            child := tsNode.GetNamedChild(i)
-            if child.Type == "hotstring_replacement"
-                || child.Type == "block" {
-                hs.replacement := this._BuildNode(hs, child, scope)
-                break
-            }
-            i++
-        }
+        bodyNode := tsNode.GetChildByFieldName("body")
+        if !bodyNode.IsNull
+            hs.replacement := this._BuildNode(hs, bodyNode, scope)
 
         parent.children.Push(hs)
         return hs
