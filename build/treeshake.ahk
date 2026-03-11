@@ -12,13 +12,127 @@
 #Include <log4ahk\Log>
 
 /**
+ * Tracks all member names referenced anywhere in the program.
+ * Used during tree-shaking to determine which class members can be pruned.
+ *
+ * When `isBlownUp` is true, a fully-dynamic member access was found
+ * and member-level pruning must be skipped entirely.
+ */
+class MemberNameTable {
+
+    /** @type {Map} case-insensitive: lowercase name → true */
+    exactNames := Map()
+
+    /** @type {Array<String>} lowercase prefix strings */
+    prefixPatterns := []
+
+    /** @type {Array<String>} lowercase suffix strings */
+    suffixPatterns := []
+
+    /** @type {Boolean} true if analysis is defeated by fully-dynamic access */
+    isBlownUp := false
+
+    /**
+     * Add a known exact member name.
+     * @param {String} name
+     */
+    AddExact(name) {
+        name := Trim(StrLower(name), " `r`n`t")
+        Log.Trace(Format("Adding exact name to member name table: '{1}'", name))
+        this.exactNames[name] := true
+    }
+
+    /**
+     * Add a prefix pattern — any member starting with this is considered referenced.
+     * @param {String} prefix
+     */
+    AddPrefix(prefix) {
+        prefix := Trim(StrLower(prefix), " `r`n`t")
+        if prefix != "" {
+            Log.Trace(Format("Adding prefix to member name table: '{1}'", prefix))
+            this.prefixPatterns.Push(prefix)
+        }
+    }
+
+    /**
+     * Add a suffix pattern — any member ending with this is considered referenced.
+     * @param {String} suffix
+     */
+    AddSuffix(suffix) {
+        suffix := Trim(StrLower(suffix), " `r`n`t")
+        if suffix != "" {
+            Log.Trace(Format("Adding suffix to member name table: '{1}'", suffix))
+            this.suffixPatterns.Push(suffix)
+        }
+    }
+
+    /**
+     * Mark the analysis as defeated. All members will be kept.
+     */
+    BlowUp() {
+        this.isBlownUp := true
+    }
+
+    /**
+     * Check if `name` could be referenced based on collected data.
+     *
+     * @param {String} name the member name to check
+     * @returns {Boolean}
+     */
+    Matches(name) {
+        if this.isBlownUp
+            return true
+        key := StrLower(name)
+        if this.exactNames.Has(key)
+            return true
+        for prefix in this.prefixPatterns
+            if SubStr(key, 1, StrLen(prefix)) == prefix
+                return true
+        for suffix in this.suffixPatterns
+            if SubStr(key, -StrLen(suffix)) == suffix
+                return true
+        return false
+    }
+}
+
+/**
  * Tree-shaking pass that identifies entry points, performs reachability
  * analysis, and deletes dead (unreachable) symbols from the IR.
  *
- * Granularity: entire functions and entire classes. Within a live class,
- * all members are kept (per-method pruning is future work).
+ * Supports per-member pruning within live classes via a global name table.
+ * If fully-dynamic member access is detected, member-level pruning is
+ * disabled and whole-class granularity is used instead.
  */
 class TreeShaker {
+
+    /**
+     * Meta-functions and special methods that are never pruned from live classes.
+     * These can be invoked implicitly by the AHK runtime.
+     */
+    static ProtectedMembers := this._BuildProtectedMap()
+
+    static _BuildProtectedMap() {
+        m := Map()
+        m.CaseSense := "Off"
+        for name in ["__New", "__Delete", "__Call", "__Get", "__Set", "__Item", "__Enum", "Call"]
+            m[name] := true
+        return m
+    }
+
+    /**
+     * Built-in functions that take a member/method name as a string argument.
+     * Key: lowercase function name. Value: {argIndex: 0-based index of the name arg}.
+     */
+    static ReflectionFunctions := this._BuildReflectionMap()
+
+    static _BuildReflectionMap() {
+        m := Map()
+        m.CaseSense := "Off"
+        m["ObjBindMethod"]     := {argIndex: 2}
+        m["ObjGetOwnPropDesc"] := {argIndex: 1}
+        m["GetMethod"]         := {argIndex: 2}
+        return m
+    }
 
     /**
      * Run tree-shaking on a program.
@@ -36,7 +150,17 @@ class TreeShaker {
                 Log.Trace(Format("  Entry: {1} '{2}'", ep.kind, ep.name))
         }
 
-        st.MarkLive(entryPoints)
+        ; Build member name table for per-member pruning
+        nameTable := this._CollectMemberNames(program)
+
+        if nameTable.isBlownUp {
+            Log.Info("Member pruning disabled: fully-dynamic member access detected")
+            st.MarkLive(entryPoints)
+        } else {
+            Log.Info(Format("Member pruning: {1} exact names, {2} prefix patterns, {3} suffix patterns",
+                nameTable.exactNames.Count, nameTable.prefixPatterns.Length, nameTable.suffixPatterns.Length))
+            st.MarkLive(entryPoints, nameTable)
+        }
 
         dead := st.GetDeadSymbols()
         Log.Info(Format("Tree-shaking: {1} dead symbols", dead.Length))
@@ -185,5 +309,218 @@ class TreeShaker {
             seen[key] := true
             entryPoints.Push(sym)
         }
+    }
+
+    /**
+     * Walk the entire IR tree and build a MemberNameTable of all member
+     * names that could be referenced at runtime. This includes:
+     *   - Static member access (obj.Foo)
+     *   - Dynamic member access with extractable constant parts (obj.prefix%expr%)
+     *   - String arguments to configured reflection functions (ObjBindMethod etc.)
+     *
+     * @param {IR.Program} program
+     * @returns {MemberNameTable}
+     */
+    _CollectMemberNames(program) {
+        table := MemberNameTable()
+        this._WalkForMemberNames(program, table)
+        return table
+    }
+
+    /**
+     * Recursive walker for member name collection.
+     *
+     * @param {IR.Node} node
+     * @param {MemberNameTable} table
+     */
+    _WalkForMemberNames(node, table) {
+        if table.isBlownUp
+            return
+
+        if node is IR.MemberAccess {
+            if !node.isDynamic {
+                ; Static member access: exact name
+                table.AddExact(node.member)
+            } else {
+                ; Dynamic member access: extract constant parts from TS node
+                this._ExtractDynamicMemberParts(node, table)
+            }
+        }
+
+        if node is IR.CallExpr {
+            this._CheckReflectionCall(node, table)
+        }
+
+        for child in node.children
+            this._WalkForMemberNames(child, table)
+    }
+
+    /**
+     * Analyze a dynamic member access's tree-sitter node to extract
+     * any constant parts (outer prefix/suffix identifiers, inner string
+     * literals in dereference expressions).
+     *
+     * @param {IR.MemberAccess} maNode the IR member access node
+     * @param {MemberNameTable} table
+     */
+    _ExtractDynamicMemberParts(maNode, table) {
+        memberTSNode := maNode.tsNode.GetChildByFieldName("member")
+        if memberTSNode.IsNull {
+            throw Error("Member access with no object?", , maNode.GetText())
+        }
+
+        ; Walk children of the dynamic_identifier to find:
+        ;   - identifier nodes (outer constant text parts)
+        ;   - dereference_operation nodes (dynamic parts)
+        hasConstant := false
+        outerPrefix := ""
+        outerSuffix := ""
+        derefNodes := []
+
+        i := 0
+        count := memberTSNode.NamedChildCount
+        while i < count {
+            child := memberTSNode.GetNamedChild(i)
+            childType := child.Type
+
+            if childType == "identifier" {
+                if derefNodes.Length == 0 {
+                    ; Before any deref - outer prefix
+                    outerPrefix .= child.Text
+                } 
+                else {
+                    ; After a deref - outer suffix (could also be middle, but
+                    ; we conservatively treat the last identifier as suffix)
+                    outerSuffix := child.Text
+                }
+                hasConstant := true
+            } else if childType == "dereference_operation" {
+                derefNodes.Push(child)
+                outerSuffix := "" ; reset suffix, we only want the trailing one
+            }
+
+            i++
+        }
+
+        ; Check inner expressions of dereference operations for string literals
+        for derefNode in derefNodes {
+            operandNode := derefNode.GetChildByFieldName("operand")
+            if operandNode.IsNull
+                continue
+
+            if operandNode.Type == "string_literal" {
+                ; Pure string literal inside deref: %"literal"% → exact name
+                ; Strip quotes from the literal text
+                litText := operandNode.Text
+                litText := SubStr(litText, 2, StrLen(litText) - 2)
+                table.AddExact(outerPrefix . litText . outerSuffix)
+                hasConstant := true
+            } 
+            else if operandNode.Type == "explicit_concat_operation" || operandNode.Type == "implicit_concat_operation" {
+                ; Concatenation: check if either side is a string literal
+                leftNode := operandNode.GetChildByFieldName("left")
+                rightNode := operandNode.GetChildByFieldName("right")
+
+                if !leftNode.IsNull && leftNode.Type == "string_literal" {
+                    litText := leftNode.Text
+                    litText := SubStr(litText, 2, StrLen(litText) - 2)
+                    table.AddPrefix(outerPrefix . litText)
+                    hasConstant := true
+                }
+                if !rightNode.IsNull && rightNode.Type == "string_literal" {
+                    litText := rightNode.Text
+                    litText := SubStr(litText, 2, StrLen(litText) - 2)
+                    table.AddSuffix(litText . outerSuffix)
+                    hasConstant := true
+                }
+            }
+        }
+
+        ; If we found outer prefix/suffix, add those as patterns
+        if outerPrefix != "" {
+            table.AddPrefix(outerPrefix)
+            hasConstant := true
+        }
+        if outerSuffix != "" {
+            table.AddSuffix(outerSuffix)
+            hasConstant := true
+        }
+
+        ; No constant parts at all → analysis is defeated
+        if !hasConstant {
+            Log.Warn(Format("Member access with dereference expression '{1}' with no constant parts defeats member pruning", 
+                Trim(maNode.GetText())))
+            Log.Warn("Possible resolutions: `r`nUse DefineProp() or GetOwnPropDesc() `r`nAdd a constant prefix or suffix like %`"pre`" fix% to narrow possibilities")
+            table.BlowUp()
+        }
+    }
+
+    /**
+     * Check if a CallExpr is a call to a configured reflection function
+     * (e.g. ObjBindMethod) and extract the member name string argument.
+     *
+     * @param {IR.CallExpr} callNode
+     * @param {MemberNameTable} table
+     */
+    _CheckReflectionCall(callNode, table) {
+        ; Only handle calls where the callee is a simple identifier
+        if !callNode.HasOwnProp("callee") || !(callNode.callee is IR.Identifier)
+            return
+
+        calleeName := callNode.callee.name
+        if !TreeShaker.ReflectionFunctions.Has(calleeName)
+            return
+
+        config := TreeShaker.ReflectionFunctions[calleeName]
+        argIdx := config.argIndex
+
+        if callNode.args.Length < argIdx
+            return
+
+        arg := callNode.args[argIdx]
+        this._ExtractStringExprParts(arg, table, callNode)
+    }
+
+    /**
+     * Analyze an IR expression node for string constant parts and add them
+     * to the name table. Handles string literals, concatenation with literal
+     * sides, and falls back to BlowUp() if no constant parts are found.
+     *
+     * Used for both reflection function arguments and deref inner expressions.
+     *
+     * @param {IR.Node} expr the expression to analyze
+     * @param {MemberNameTable} table
+     * @param {IR.Node} contextNode the enclosing node (for error messages)
+     * @param {String} prefix constant text to prepend (from outer context)
+     * @param {String} suffix constant text to append (from outer context)
+     */
+    _ExtractStringExprParts(expr, table, contextNode, prefix := "", suffix := "") {
+        if expr is IR.Literal && expr.literalType == "string" {
+            ; Exact string literal
+            table.AddExact(prefix . expr.value . suffix)
+            return
+        }
+
+        if expr is IR.BinaryExpr && (expr.operator == "." || expr.operator == " ") {
+            ; Concatenation — check if either side is a string literal
+            hasConstant := false
+
+            if expr.HasOwnProp("left") && expr.left is IR.Literal && expr.left.literalType == "string" {
+                table.AddPrefix(prefix . expr.left.value)
+                hasConstant := true
+            }
+            if expr.HasOwnProp("right") && expr.right is IR.Literal && expr.right.literalType == "string" {
+                table.AddSuffix(expr.right.value . suffix)
+                hasConstant := true
+            }
+
+            if hasConstant
+                return
+        }
+
+        ; No constant parts extractable — analysis defeated
+        Log.Warn(Format("Non-constant member name expression defeats member pruning: {1}",
+            contextNode.GetText()))
+        table.BlowUp()
     }
 }

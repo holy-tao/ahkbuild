@@ -716,6 +716,14 @@ class IR {
     }
 
     /**
+     * A dynamic identifier like `%expr%` or `ext%expr%`
+     * Maps from 
+     */
+    class DynamicIdentifier extends IR.Node {
+
+    }
+
+    /**
      * A member access expression: obj.member
      * Maps from: member_access
      */
@@ -731,6 +739,12 @@ class IR {
          * @type {String}
          */
         member := ""
+
+        /**
+         * True when the member is a dynamic_identifier (contains %expr%).
+         * @type {Boolean}
+         */
+        isDynamic := false
     }
 
     /**

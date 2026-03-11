@@ -399,8 +399,12 @@ class IRSymbolTable {
      *   - Labels referenced by Goto / string-based builtins
      *
      * @param {Array<IRSymbol>} entryPoints symbols to start from
+     * @param {MemberNameTable} nameTable optional — if provided, enables per-member
+     *        pruning within live classes. Members are only kept if their name appears
+     *        in the table or is a protected meta-function. If omitted, all members of
+     *        live classes are kept (whole-class granularity).
      */
-    MarkLive(entryPoints) {
+    MarkLive(entryPoints, nameTable := "") {
         worklist := []
         for ep in entryPoints
             worklist.Push(ep)
@@ -412,11 +416,11 @@ class IRSymbolTable {
             sym.isLive := true
             Log.Trace(Format.Bind("Marking {1} '{2}' live", sym.kind, sym.name))
 
-            ; If this is a class, propagate liveness to all its member symbols
-            ; (methods, properties, nested classes). This gives whole-class
-            ; granularity: either the entire class is live or it's dead.
+            ; If this is a class, propagate liveness to member symbols.
+            ; With a nameTable, only members whose names are referenced are kept.
+            ; Without one, all members are kept (whole-class granularity).
             if sym.kind == "class" && sym.HasOwnProp("node") && sym.node is IR.ClassDecl
-                this._MarkClassMembersLive(sym, worklist)
+                this._MarkClassMembersLive(sym, worklist, nameTable)
 
             ; Walk the symbol's declaring node to find all references to other symbols.
             ; Add any un-visited symbols to the worklist.
@@ -494,19 +498,44 @@ class IRSymbolTable {
     }
 
     /**
-     * When a class is marked live, push all its registered member symbols
-     * (methods, properties, nested classes) onto the worklist. This provides
-     * whole-class granularity — either the entire class is kept or removed.
+     * When a class is marked live, push its member symbols onto the worklist.
+     *
+     * If `nameTable` is provided, only members whose names are referenced in
+     * the program (or are protected meta-functions) are pushed. Otherwise all
+     * members are pushed (whole-class granularity).
      *
      * @param {IRSymbol} classSym the class symbol
      * @param {Array<IRSymbol>} worklist the worklist to add to
+     * @param {MemberNameTable} nameTable optional member name filter
      */
-    _MarkClassMembersLive(classSym, worklist) {
+    _MarkClassMembersLive(classSym, worklist, nameTable := "") {
         prefix := StrLower(classSym.node.fullyQualifiedName) "."
         prefixLen := StrLen(prefix)
         for fqn, memberSym in this._symbols {
-            if SubStr(fqn, 1, prefixLen) == prefix && !memberSym.isLive
+            if SubStr(fqn, 1, prefixLen) != prefix || memberSym.isLive
+                continue
+
+            ; No name table → keep all members (current behavior)
+            if nameTable == "" {
                 worklist.Push(memberSym)
+                continue
+            }
+
+            ; Extract the member's own name (after the class FQN prefix)
+            memberName := SubStr(fqn, prefixLen + 1)
+
+            ; Always keep protected meta-functions
+            if TreeShaker.ProtectedMembers.Has(memberName) {
+                worklist.Push(memberSym)
+                continue
+            }
+
+            ; Keep if name appears in the member name table
+            if nameTable.Matches(memberName) {
+                worklist.Push(memberSym)
+            } else {
+                Log.Trace(Format("  Pruning member '{1}' — name not referenced", fqn))
+            }
         }
     }
 

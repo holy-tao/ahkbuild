@@ -1,4 +1,5 @@
 #Requires AutoHotkey v2.0
+#SingleInstance Off
 
 #Include <Extensions\Errors\All>
 #Include <argparse\ArgumentParser>

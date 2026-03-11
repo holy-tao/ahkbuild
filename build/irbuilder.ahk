@@ -903,8 +903,10 @@ class IRBuilder {
 
         if !objNode.IsNull
             ma.object := this._BuildNode(ma, objNode, scope)
-        if !memberNode.IsNull
+        if !memberNode.IsNull {
             ma.member := memberNode.Text
+            ma.isDynamic := memberNode.Type == "dynamic_identifier"
+        }
 
         parent.children.Push(ma)
         return ma
