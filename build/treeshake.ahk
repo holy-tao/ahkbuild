@@ -37,9 +37,11 @@ class MemberNameTable {
      * @param {String} name
      */
     AddExact(name) {
-        name := Trim(StrLower(name), " `r`n`t")
-        Log.Trace(Format("Adding exact name to member name table: '{1}'", name))
-        this.exactNames[name] := true
+        name := this._Normalize(name)
+        if !this.exactNames.Has(name) {
+            Log.Trace(Format("Adding exact name to member name table: '{1}'", name))
+            this.exactNames[name] := true
+        }
     }
 
     /**
@@ -47,8 +49,8 @@ class MemberNameTable {
      * @param {String} prefix
      */
     AddPrefix(prefix) {
-        prefix := Trim(StrLower(prefix), " `r`n`t")
-        if prefix != "" {
+        prefix := this._Normalize(prefix)
+        if prefix != "" && !this.prefixPatterns.Has(prefix) {
             Log.Trace(Format("Adding prefix to member name table: '{1}'", prefix))
             this.prefixPatterns.Push(prefix)
         }
@@ -59,8 +61,8 @@ class MemberNameTable {
      * @param {String} suffix
      */
     AddSuffix(suffix) {
-        suffix := Trim(StrLower(suffix), " `r`n`t")
-        if suffix != "" {
+        suffix := this._Normalize(suffix)
+        if suffix != "" && !this.suffixPatterns.Has(suffix) {
             Log.Trace(Format("Adding suffix to member name table: '{1}'", suffix))
             this.suffixPatterns.Push(suffix)
         }
@@ -82,7 +84,8 @@ class MemberNameTable {
     Matches(name) {
         if this.isBlownUp
             return true
-        key := StrLower(name)
+
+        key := this._Normalize(name)
         if this.exactNames.Has(key)
             return true
         for prefix in this.prefixPatterns
@@ -93,6 +96,8 @@ class MemberNameTable {
                 return true
         return false
     }
+
+    _Normalize(name) => Trim(StrLower(name), " `r`n`t")
 }
 
 /**
