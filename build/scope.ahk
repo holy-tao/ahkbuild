@@ -538,7 +538,7 @@ class IRSymbolTable {
             if nameTable.Matches(memberName) {
                 worklist.Push(memberSym)
             } else {
-                Log.Trace(Format("  Pruning member '{1}' — name not referenced", fqn))
+                Log.Trace(Format("  Pruning member '{1}' — name '{2}' not referenced", fqn, memberName))
             }
         }
     }
