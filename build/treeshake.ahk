@@ -153,6 +153,15 @@ class TreeShaker {
         ; Build member name table for per-member pruning
         nameTable := this._CollectMemberNames(program)
 
+        ; Prune DefineProp calls that create never-referenced properties.
+        ; Must run before MarkLive so references inside pruned descriptors
+        ; are not followed during reachability analysis.
+        if !nameTable.isBlownUp {
+            pruned := this._PruneDefinePropCalls(program, nameTable)
+            if pruned > 0
+                Log.Info(Format("DefineProp pruning: removed {1} call(s)", pruned))
+        }
+
         if nameTable.isBlownUp {
             Log.Info("Member pruning disabled: fully-dynamic member access detected")
             st.MarkLive(entryPoints)
@@ -522,5 +531,102 @@ class TreeShaker {
         Log.Warn(Format("Non-constant member name expression defeats member pruning: {1}",
             contextNode.GetText()))
         table.BlowUp()
+    }
+
+    ; ==========================================================================
+    ; DefineProp pruning
+    ; ==========================================================================
+
+    /**
+     * Walk the IR tree and prune DefineProp calls that create properties whose
+     * names never appear in the member name table. Must run BEFORE MarkLive so
+     * that references inside pruned descriptors are not followed.
+     *
+     * @param {IR.Program} program
+     * @param {MemberNameTable} nameTable
+     * @returns {Integer} number of pruned calls
+     */
+    _PruneDefinePropCalls(program, nameTable) {
+        if nameTable.isBlownUp
+            return 0
+        pruned := 0
+        this._WalkForDefineProp(program, nameTable, &pruned)
+        return pruned
+    }
+
+    /**
+     * Recursive walker that checks each CallExpr for a prunable DefineProp call.
+     *
+     * @param {IR.Node} node
+     * @param {MemberNameTable} nameTable
+     * @param {VarRef<Integer>} &pruned counter
+     */
+    _WalkForDefineProp(node, nameTable, &pruned) {
+        if node is IR.CallExpr {
+            if this._TryPruneDefineProp(node, nameTable) {
+                pruned++
+                return ; Don't recurse into pruned call's children
+            }
+        }
+
+        for child in node.children
+            this._WalkForDefineProp(child, nameTable, &pruned)
+    }
+
+    /**
+     * Check if a CallExpr is a prunable DefineProp call and mark it deleted.
+     *
+     * Conditions for pruning:
+     *   1. Callee is a static MemberAccess with member "DefineProp"
+     *   2. First argument is a string literal (property name)
+     *   3. Property name is not a protected meta-function
+     *   4. Property name is not in the member name table (never referenced)
+     *   5. Call is a standalone statement (parent is Block or Program)
+     *   6. Callee object is not a CallExpr (guards against chained calls)
+     *
+     * @param {IR.CallExpr} callNode
+     * @param {MemberNameTable} nameTable
+     * @returns {Boolean} true if pruned
+     */
+    _TryPruneDefineProp(callNode, nameTable) {
+        ; Must have a callee that is a static MemberAccess named "DefineProp"
+        if !callNode.HasOwnProp("callee") || !(callNode.callee is IR.MemberAccess)
+            return false
+        if callNode.callee.isDynamic
+            return false
+        if StrLower(callNode.callee.member) != "defineprop"
+            return false
+
+        ; First argument must be a string literal
+        if callNode.args.Length < 1
+            return false
+        nameArg := callNode.args[1]
+        if !(nameArg is IR.Literal) || nameArg.literalType != "string"
+            return false
+
+        propName := nameArg.value
+
+        ; Never prune protected meta-function names
+        if TreeShaker.ProtectedMembers.Has(propName)
+            return false
+
+        ; Keep if the name is referenced anywhere
+        if nameTable.Matches(propName)
+            return false
+
+        ; Only prune standalone statement calls (parent is Block or Program)
+        if !callNode.HasOwnProp("parent")
+            return false
+        if !(callNode.parent is IR.Block || callNode.parent is IR.Program)
+            return false
+
+        ; Guard against chained calls: obj.DefineProp("A", d).DefineProp("B", d)
+        ; Pruning the outer would incorrectly delete the inner
+        if callNode.callee.HasOwnProp("object") && callNode.callee.object is IR.CallExpr
+            return false
+
+        Log.Trace(Format("Pruning DefineProp call: property '{1}' is never referenced", propName))
+        callNode.deleted := true
+        return true
     }
 }

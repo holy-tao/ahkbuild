@@ -463,4 +463,118 @@ class MemberPruningTests {
             Assert.InStr(shaken, "B() => 2")
         }
     }
+
+    class DefineProp {
+
+        UnreferencedProp_IsPruned() {
+            code := "
+            ( comments
+                class MyClass {
+                    __New() {
+                        this.DefineProp("Unused", {Get: (*) => 0})
+                    }
+                }
+
+                obj := MyClass()
+            )"
+
+            shaken := BuildTester.TreeShake(code)
+            Assert.NotInStr(shaken, "Unused")
+            Assert.NotInStr(shaken, "DefineProp")
+        }
+
+        ReferencedProp_Survives() {
+            code := "
+            ( comments
+                class MyClass {
+                    __New() {
+                        this.DefineProp("Used", {Get: (*) => 1})
+                    }
+                }
+
+                obj := MyClass()
+                MsgBox(obj.Used)
+            )"
+
+            shaken := BuildTester.TreeShake(code)
+            Assert.InStr(shaken, "DefineProp")
+            Assert.InStr(shaken, "Used")
+        }
+
+        NonLiteralName_KeptConservatively() {
+            code := "
+            ( comments
+                class MyClass {
+                    __New() {
+                        name := "Dynamic"
+                        this.DefineProp(name, {Get: (*) => 1})
+                    }
+                }
+
+                obj := MyClass()
+            )"
+
+            ; Non-literal property name — cannot determine statically, keep the call
+            shaken := BuildTester.TreeShake(code)
+            Assert.InStr(shaken, "DefineProp")
+        }
+
+        ProtectedName_NeverPruned() {
+            code := "
+            ( comments
+                class MyClass {
+                    __New() {
+                        this.DefineProp("__Get", {Call: (this, name, params) => ""})
+                    }
+                }
+
+                obj := MyClass()
+            )"
+
+            ; Protected meta-function name — never pruned
+            shaken := BuildTester.TreeShake(code)
+            Assert.InStr(shaken, "DefineProp")
+            Assert.InStr(shaken, "__Get")
+        }
+
+        TransitivePruning() {
+            code := "
+            ( comments
+                MyHelper(this) {
+                    return 42
+                }
+
+                class MyClass {
+                    __New() {
+                        this.DefineProp("Unused", {Get: MyHelper})
+                    }
+                }
+
+                obj := MyClass()
+            )"
+
+            ; MyHelper is only referenced from the pruned DefineProp descriptor,
+            ; so it should also be dead
+            shaken := BuildTester.TreeShake(code)
+            Assert.NotInStr(shaken, "Unused")
+            Assert.NotInStr(shaken, "MyHelper")
+        }
+
+        PrototypeForm_IsPruned() {
+            code := "
+            ( comments
+                class MyClass {
+                    static __New() {
+                        this.Prototype.DefineProp("Unused", {Get: (*) => 0})
+                    }
+                }
+
+                obj := MyClass()
+            )"
+
+            shaken := BuildTester.TreeShake(code)
+            Assert.NotInStr(shaken, "Unused")
+            Assert.NotInStr(shaken, "DefineProp")
+        }
+    }
 }

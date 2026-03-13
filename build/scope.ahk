@@ -437,6 +437,10 @@ class IRSymbolTable {
      * @param {Array<IRSymbol>} worklist the worklist to add to
      */
     _CollectReferencesInto(node, worklist) {
+        ; Skip nodes already marked as deleted (e.g., pruned DefineProp calls)
+        if node.deleted
+            return
+
         ; If this node is an Identifier with a resolved symbol, add it
         if node is IR.Identifier {
             if node.HasOwnProp("resolvedSymbol") {
