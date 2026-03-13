@@ -1,2 +1,4 @@
 *.out.ahk
 *.log
+bin/
+dist/
