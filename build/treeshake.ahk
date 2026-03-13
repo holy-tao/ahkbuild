@@ -35,11 +35,12 @@ class MemberNameTable {
     /**
      * Add a known exact member name.
      * @param {String} name
+     * @param {String} nodeText text of the node, for logs
      */
-    AddExact(name) {
+    AddExact(name, nodeText := "(No node text)") {
         name := this._Normalize(name)
         if !this.exactNames.Has(name) {
-            Log.Trace(Format("Adding exact name to member name table: '{1}'", name))
+            Log.Trace(Format("Adding exact name to member name table: '{1}' (referenced at '{2}')", name, nodeText))
             this.exactNames[name] := true
         }
     }
@@ -354,7 +355,7 @@ class TreeShaker {
         if node is IR.MemberAccess {
             if !node.isDynamic {
                 ; Static member access: exact name
-                table.AddExact(node.member)
+                table.AddExact(node.member.GetText(), node.GetText())
             } else {
                 ; Dynamic member access: extract constant parts from TS node
                 this._ExtractDynamicMemberParts(node, table)
@@ -391,6 +392,11 @@ class TreeShaker {
         outerSuffix := ""
         derefNodes := []
 
+        if memberTSNode.Type == "dereference_operation" {
+            derefNodes.Push(memberTSNode)
+            goto scan_derefs
+        }
+
         i := 0
         count := memberTSNode.NamedChildCount
         while i < count {
@@ -416,6 +422,8 @@ class TreeShaker {
             i++
         }
 
+        scan_derefs:
+
         ; Check inner expressions of dereference operations for string literals
         for derefNode in derefNodes {
             operandNode := derefNode.GetChildByFieldName("operand")
@@ -427,7 +435,7 @@ class TreeShaker {
                 ; Strip quotes from the literal text
                 litText := operandNode.Text
                 litText := SubStr(litText, 2, StrLen(litText) - 2)
-                table.AddExact(outerPrefix . litText . outerSuffix)
+                table.AddExact(outerPrefix . litText . outerSuffix, maNode.GetText())
                 hasConstant := true
             } 
             else if operandNode.Type == "explicit_concat_operation" || operandNode.Type == "implicit_concat_operation" {
@@ -511,7 +519,7 @@ class TreeShaker {
     _ExtractStringExprParts(expr, table, contextNode, prefix := "", suffix := "") {
         if expr is IR.Literal && expr.literalType == "string" {
             ; Exact string literal
-            table.AddExact(prefix . expr.value . suffix)
+            table.AddExact(prefix . expr.value . suffix, contextNode.GetText())
             return
         }
 
@@ -599,7 +607,7 @@ class TreeShaker {
             return false
         if callNode.callee.isDynamic
             return false
-        if StrLower(callNode.callee.member) != "defineprop"
+        if StrLower(callNode.callee.member.GetText()) != "defineprop"
             return false
 
         ; First argument must be a string literal

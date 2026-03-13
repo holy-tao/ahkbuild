@@ -717,7 +717,7 @@ class IR {
 
     /**
      * A dynamic identifier like `%expr%` or `ext%expr%`
-     * Maps from 
+     * Maps from: dynamic_identifier
      */
     class DynamicIdentifier extends IR.Node {
 

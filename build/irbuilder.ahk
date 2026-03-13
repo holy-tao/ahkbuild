@@ -901,11 +901,12 @@ class IRBuilder {
         objNode := tsNode.GetChildByFieldName("object")
         memberNode := tsNode.GetChildByFieldName("member")
 
-        if !objNode.IsNull
+        if !objNode.IsNull {
             ma.object := this._BuildNode(ma, objNode, scope)
+        }
         if !memberNode.IsNull {
-            ma.member := memberNode.Text
-            ma.isDynamic := memberNode.Type == "dynamic_identifier"
+            ma.member := this._BuildNode(ma, memberNode, scope)
+            ma.isDynamic := ma.member is IR.DerefExpr || ma.member is IR.DynamicIdentifier
         }
 
         parent.children.Push(ma)
@@ -1724,6 +1725,13 @@ class IRBuilder {
                 ; TODO if not a function increment "Call" method call count
                 if(sym.kind == "function")
                     sym.callCount++
+            }
+        }
+        else {
+            Log.Info("Non-identifier call node callee: " Type(callNode.callee))
+            for child in callNode.callee.children {
+                Log.Info("  " A_ThisFunc " " Type(child))
+                this._ResolveReferences(child)
             }
         }
     }
