@@ -1692,6 +1692,17 @@ class IRBuilder {
             this._ResolveIdentifier(node)
         }
 
+        ; Member access: resolve object subtree, skip member (it's a name,
+        ; not a variable reference), then resolve the full qualified chain.
+        if node is IR.MemberAccess {
+            if node.HasOwnProp("object")
+                this._ResolveReferences(node.object)
+            if node.isDynamic
+                this._ResolveReferences(node.member)
+            this._ResolveMemberAccessChain(node)
+            return
+        }
+
         ; Recurse into all children
         for child in node.children
             this._ResolveReferences(child)
@@ -1712,7 +1723,6 @@ class IRBuilder {
         if callNode.isDynamic || !callNode.HasOwnProp("callee")
             return
 
-        ; TODO resolve the whole callee chain for member access calls (obj.Method())
         ; TODO if callee is a class, search it for a static Call method, add a reference to that, and increment its callCount
         if callNode.callee is IR.Identifier {
             ; In AHK v2, function calls resolve through the function namespace,
@@ -1727,11 +1737,14 @@ class IRBuilder {
                     sym.callCount++
             }
         }
-        else {
-            Log.Info("Non-identifier call node callee: " Type(callNode.callee))
-            for child in callNode.callee.children {
-                Log.Info("  " A_ThisFunc " " Type(child))
-                this._ResolveReferences(child)
+        else if callNode.callee is IR.MemberAccess
+            && callNode.callee.HasOwnProp("resolvedSymbol") {
+            ; Member access chain was resolved by _ResolveMemberAccessChain.
+            sym := callNode.callee.resolvedSymbol
+            if sym.HasOwnProp("node") {
+                callNode.resolvedTarget := sym.node
+                if sym.kind == "function"
+                    sym.callCount++
             }
         }
     }
@@ -1751,6 +1764,63 @@ class IRBuilder {
             id.resolvedScope := sym.scope
             this.symbolTable.AddReference(sym, id)
         }
+    }
+
+    /**
+     * Resolve a member access chain (e.g. Outer.Inner) by building the
+     * fully qualified name and looking it up in the symbol table.
+     *
+     * Uses identifier text (not resolved symbols) because scope resolution
+     * may create spurious locals in assume-local functions.
+     *
+     * @param {IR.MemberAccess} node
+     */
+    _ResolveMemberAccessChain(node) {
+        if node.isDynamic
+            return
+
+        qName := this._BuildQualifiedName(node)
+        if qName == ""
+            return
+
+        sym := this.symbolTable.Lookup(qName)
+        if sym {
+            node.resolvedSymbol := sym
+            this.symbolTable.AddReference(sym, node)
+        }
+
+        ; Also resolve the object via the symbol table. Scope resolution
+        ; may have created a spurious local (assume-local functions), but
+        ; if the full chain matched a symbol, the object must be a class.
+        if node.object is IR.MemberAccess {
+            this._ResolveMemberAccessChain(node.object)
+        } else if node.object is IR.Identifier {
+            objSym := this.symbolTable.Lookup(node.object.name)
+            if objSym {
+                node.object.resolvedSymbol := objSym
+                this.symbolTable.AddReference(objSym, node.object)
+            }
+        }
+    }
+
+    /**
+     * Recursively build a dotted qualified name from a member access chain.
+     * Returns "" if any part is dynamic or not an identifier/member-access.
+     *
+     * @param {IR.Node} node
+     * @returns {String}
+     */
+    _BuildQualifiedName(node) {
+        if node is IR.Identifier
+            return node.name
+
+        if node is IR.MemberAccess && !node.isDynamic {
+            objPart := this._BuildQualifiedName(node.object)
+            if objPart == ""
+                return ""
+            return StrLower(objPart "." node.member.GetText())
+        }
+        return ""
     }
 
     /**

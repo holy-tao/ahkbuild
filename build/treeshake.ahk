@@ -268,6 +268,11 @@ class TreeShaker {
                 this._AddEntry(entryPoints, seen, node.resolvedSymbol)
         }
 
+        if node is IR.MemberAccess {
+            if node.HasOwnProp("resolvedSymbol")
+                this._AddEntry(entryPoints, seen, node.resolvedSymbol)
+        }
+
         if node is IR.CallExpr {
             if node.HasOwnProp("resolvedTarget") {
                 targetSym := st.Lookup(node.resolvedTarget.name)

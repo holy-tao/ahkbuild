@@ -152,4 +152,34 @@ class TreeShakeTests {
             Assert.InStr(shaken, "Referencer(arg1, arg2 := Referenced())")
         }
     }
+
+    class MemberAccess {
+        MemberAccess_ResolvedThroughChain() {
+            code := "
+            ( comments
+                class Outer {
+                    ; With bug, outer is improperly pruned
+                    class Inner  {
+                        __New(params*) => MsgBox(params.length)
+                    }
+                }
+
+                class Second {
+                    Fn() {
+                        Outer.Inner(1, 2)
+                    }
+                }
+
+                var := Second()
+                var.Fn()
+            )"
+
+            shaken := BuildTester.TreeShake(code)
+            Assert.InStr(shaken, "class Outer")
+            Assert.InStr(shaken, "class Inner")
+            Assert.InStr(shaken, "class Second")
+            Assert.InStr(shaken, "Fn() {")
+            Assert.InStr(shaken, "__New(params*)")
+        }
+    }
 }

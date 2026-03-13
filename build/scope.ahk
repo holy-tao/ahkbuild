@@ -487,7 +487,8 @@ class IRSymbolTable {
         }
 
         if node is IR.MemberAccess {
-            this._CollectReferencesInto(node.object, worklist)
+            if node.HasOwnProp("resolvedSymbol") && !node.resolvedSymbol.isLive
+                worklist.Push(node.resolvedSymbol)
         }
 
         if node is IR.Block {
