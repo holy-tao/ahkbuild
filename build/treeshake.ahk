@@ -20,14 +20,14 @@
  */
 class MemberNameTable {
 
-    /** @type {Map} case-insensitive: lowercase name → true */
+    /** @type {Map} case-insensitive: lowercase name -> IR.Node[] */
     exactNames := Map()
 
-    /** @type {Array<String>} lowercase prefix strings */
-    prefixPatterns := []
+    /** @type {Map} lowercase prefix strings -> IR.Node[]*/
+    prefixPatterns := Map()
 
-    /** @type {Array<String>} lowercase suffix strings */
-    suffixPatterns := []
+    /** @type {Map} lowercase suffix strings -> IR.Node[]*/
+    suffixPatterns := Map()
 
     /** @type {Boolean} true if analysis is defeated by fully-dynamic access */
     isBlownUp := false
@@ -35,38 +35,44 @@ class MemberNameTable {
     /**
      * Add a known exact member name.
      * @param {String} name
-     * @param {String} nodeText text of the node, for logs
+     * @param {IR.Node} node the node that's referencing the name
      */
-    AddExact(name, nodeText := "(No node text)") {
+    AddExact(name, node) {
         name := this._Normalize(name)
+
         if !this.exactNames.Has(name) {
-            Log.Trace(Format("Adding exact name to member name table: '{1}' (referenced at '{2}')", name, nodeText))
-            this.exactNames[name] := true
+            Log.Trace(Format("Adding exact name to member name table: '{1}' (referenced at '{2}')", name, node.GetText()))
+            this.exactNames[name] := Array()
         }
+        this.exactNames[name].Push(name)
     }
 
     /**
      * Add a prefix pattern — any member starting with this is considered referenced.
      * @param {String} prefix
      */
-    AddPrefix(prefix) {
+    AddPrefix(prefix, node) {
         prefix := this._Normalize(prefix)
         if prefix != "" && !this.prefixPatterns.Has(prefix) {
-            Log.Trace(Format("Adding prefix to member name table: '{1}'", prefix))
-            this.prefixPatterns.Push(prefix)
+            Log.Trace(Format("Adding prefix to member name table: '{1}' (referenced at '{2}')", prefix, node.GetText()))
+            this.prefixPatterns[prefix] := Array()
         }
+
+        this.prefixPatterns[prefix].Push(prefix)
     }
 
     /**
      * Add a suffix pattern — any member ending with this is considered referenced.
      * @param {String} suffix
      */
-    AddSuffix(suffix) {
+    AddSuffix(suffix, node) {
         suffix := this._Normalize(suffix)
         if suffix != "" && !this.suffixPatterns.Has(suffix) {
-            Log.Trace(Format("Adding suffix to member name table: '{1}'", suffix))
-            this.suffixPatterns.Push(suffix)
+            Log.Trace(Format("Adding suffix to member name table: '{1}' (referenced at '{2}')", suffix, node.GetText()))
+            this.suffixPatterns[suffix] := Array()
         }
+
+        this.suffixPatterns[suffix].Push(suffix)
     }
 
     /**
@@ -80,22 +86,25 @@ class MemberNameTable {
      * Check if `name` could be referenced based on collected data.
      *
      * @param {String} name the member name to check
-     * @returns {Boolean}
+     * @returns {IR.Node[] | 0} the nodes that reference the name (if a prefix / suffix, this is empty)
      */
     Matches(name) {
         if this.isBlownUp
-            return true
+            return []
 
         key := this._Normalize(name)
         if this.exactNames.Has(key)
-            return true
-        for prefix in this.prefixPatterns
+            return this.exactNames[key]
+
+        for prefix, nodes in this.prefixPatterns
             if SubStr(key, 1, StrLen(prefix)) == prefix
-                return true
-        for suffix in this.suffixPatterns
+                return nodes
+
+        for suffix, nodes in this.suffixPatterns
             if SubStr(key, -StrLen(suffix)) == suffix
-                return true
-        return false
+                return nodes
+
+        return 0
     }
 
     _Normalize(name) => Trim(StrLower(name), " `r`n`t")
@@ -171,9 +180,10 @@ class TreeShaker {
         if nameTable.isBlownUp {
             Log.Info("Member pruning disabled: fully-dynamic member access detected")
             st.MarkLive(entryPoints)
-        } else {
+        } 
+        else {
             Log.Info(Format("Member pruning: {1} exact names, {2} prefix patterns, {3} suffix patterns",
-                nameTable.exactNames.Count, nameTable.prefixPatterns.Length, nameTable.suffixPatterns.Length))
+                nameTable.exactNames.Count, nameTable.prefixPatterns.Count, nameTable.suffixPatterns.Count))
             st.MarkLive(entryPoints, nameTable)
         }
 
@@ -360,7 +370,7 @@ class TreeShaker {
         if node is IR.MemberAccess {
             if !node.isDynamic {
                 ; Static member access: exact name
-                table.AddExact(node.member.GetText(), node.GetText())
+                table.AddExact(node.member.GetText(), node)
             } else {
                 ; Dynamic member access: extract constant parts from TS node
                 this._ExtractDynamicMemberParts(node, table)
@@ -440,7 +450,7 @@ class TreeShaker {
                 ; Strip quotes from the literal text
                 litText := operandNode.Text
                 litText := SubStr(litText, 2, StrLen(litText) - 2)
-                table.AddExact(outerPrefix . litText . outerSuffix, maNode.GetText())
+                table.AddExact(outerPrefix . litText . outerSuffix, maNode)
                 hasConstant := true
             } 
             else if operandNode.Type == "explicit_concat_operation" || operandNode.Type == "implicit_concat_operation" {
@@ -451,13 +461,13 @@ class TreeShaker {
                 if !leftNode.IsNull && leftNode.Type == "string_literal" {
                     litText := leftNode.Text
                     litText := SubStr(litText, 2, StrLen(litText) - 2)
-                    table.AddPrefix(outerPrefix . litText)
+                    table.AddPrefix(outerPrefix . litText, maNode)
                     hasConstant := true
                 }
                 if !rightNode.IsNull && rightNode.Type == "string_literal" {
                     litText := rightNode.Text
                     litText := SubStr(litText, 2, StrLen(litText) - 2)
-                    table.AddSuffix(litText . outerSuffix)
+                    table.AddSuffix(litText . outerSuffix, maNode)
                     hasConstant := true
                 }
             }
@@ -465,11 +475,11 @@ class TreeShaker {
 
         ; If we found outer prefix/suffix, add those as patterns
         if outerPrefix != "" {
-            table.AddPrefix(outerPrefix)
+            table.AddPrefix(outerPrefix, maNode)
             hasConstant := true
         }
         if outerSuffix != "" {
-            table.AddSuffix(outerSuffix)
+            table.AddSuffix(outerSuffix, maNode)
             hasConstant := true
         }
 
@@ -533,11 +543,11 @@ class TreeShaker {
             hasConstant := false
 
             if expr.HasOwnProp("left") && expr.left is IR.Literal && expr.left.literalType == "string" {
-                table.AddPrefix(prefix . expr.left.value)
+                table.AddPrefix(prefix . expr.left.value, expr)
                 hasConstant := true
             }
             if expr.HasOwnProp("right") && expr.right is IR.Literal && expr.right.literalType == "string" {
-                table.AddSuffix(expr.right.value . suffix)
+                table.AddSuffix(expr.right.value . suffix, expr)
                 hasConstant := true
             }
 
