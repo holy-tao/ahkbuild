@@ -311,25 +311,25 @@ class IRSymbolTable {
      * E.g. "myclass.mymethod", "myfunc", "myclass.myprop"
      * @type {Map}
      */
-    _symbols := (m := Map(), m.CaseSense := false, m)
+    _symbols := (m := TypedMap(String, IRSymbol), m.CaseSense := false, m)
 
     /**
      * Top-level functions.
      * @type {Map}
      */
-    functions := (m := Map(), m.CaseSense := false, m)
+    functions := (m := TypedMap(String, IRSymbol), m.CaseSense := false, m)
 
     /**
      * Top-level classes.
      * @type {Map}
      */
-    classes := (m := Map(), m.CaseSense := false, m)
+    classes := (m := TypedMap(String, IRSymbol), m.CaseSense := false, m)
 
     /**
      * Labels.
      * @type {Map}
      */
-    labels := (m := Map(), m.CaseSense := false, m)
+    labels := (m := TypedMap(String, IRSymbol), m.CaseSense := false, m)
 
     /**
      * Register a symbol in the table.
@@ -405,7 +405,7 @@ class IRSymbolTable {
      *        live classes are kept (whole-class granularity).
      */
     MarkLive(entryPoints, nameTable := "") {
-        worklist := []
+        worklist := TypedArray(IRSymbol)
         for ep in entryPoints
             worklist.Push(ep)
 

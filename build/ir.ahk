@@ -8,6 +8,8 @@
 #Requires AutoHotkey v2.0
 
 #Include <tree-sitter\TSNode>
+#Include <Collections\Typed\TypedArray>
+#Include <Collections\Typed\TypedMap>
 
 /**
  * The intermediate representation used to perform transformations on source trees.
@@ -61,7 +63,7 @@ class IR {
          * Child nodes.
          * @type {Array<IR.Node>}
          */
-        children := []
+        children := TypedArray(IR.Node)
 
         ; --- Emission ---
 
@@ -84,26 +86,18 @@ class IR {
          * otherwise returns the original source text from the tree-sitter node.
          * @returns {String}
          */
-        GetText() {
-            if this.HasOwnProp("_overrideText")
-                return this._overrideText
-            return this.tsNode.Text
-        }
+        GetText() => this.HasOwnProp("_overrideText") ? this._overrideText : this.tsNode.Text
 
         /**
          * Sets override text, marking this node as transformed.
          * @param {String} text the replacement text
          */
-        SetOverride(text) {
-            this._overrideText := text
-        }
+        SetOverride(text) => this._overrideText := text
 
         /**
          * Clears override text, reverting to original source.
          */
-        ClearOverride() {
-            this.DeleteProp("_overrideText")
-        }
+        ClearOverride() => this.DeleteProp("_overrideText")
 
         /**
          * Determines whether this node is a descendant of `other` by walking
@@ -162,7 +156,7 @@ class IR {
          * All top-level statements and declarations.
          * @type {Array<IR.Node>}
          */
-        body := []
+        body := TypedArray(IR.Node)
 
         /**
          * The global scope.
@@ -197,13 +191,19 @@ class IR {
          * Statements within the block.
          * @type {Array<IR.Node>}
          */
-        body := []
+        body := TypedArray(IR.Node)
 
         /**
          * Scope associated with this block, if any.
          * @type {IR.Scope}
          */
         scope := unset
+
+        /**
+         * True if the block contains no statements
+         * @type {Boolean}
+         */
+        isEmpty => this.body.Length = 0
     }
 
     /**
@@ -242,7 +242,7 @@ class IR {
          * Parameter list.
          * @type {Array<IR.Param>}
          */
-        params := []
+        params := TypedArray(IR.Param)
 
         /**
          * Function body — either an IR.Block or an expression node (for arrow functions).
@@ -299,6 +299,12 @@ class IR {
          * @type {Boolean}
          */
         isRecursive := false
+
+        /**
+         * True if the function body is empty
+         * @type {Boolean}
+         */
+        isEmpty := this.body is IR.Block && this.body.isEmpty
 
         /**
          * True if function has side effects (set by analysis).
@@ -376,31 +382,31 @@ class IR {
          * Methods (including __New, __Delete, static __New, etc.).
          * @type {Array<IR.Function>}
          */
-        methods := []
+        methods := TypedArray(IR.Function)
 
         /**
          * Property declarations (with getter/setter or arrow).
          * @type {Array<IR.Property>}
          */
-        properties := []
+        properties := TypedArray(IR.Property)
 
         /**
          * Static fields (static prop := value).
          * @type {Array<IR.Field>}
          */
-        staticFields := []
+        staticFields := TypedArray(IR.Field)
 
         /**
          * Instance fields (prop := value).
          * @type {Array<IR.Field>}
          */
-        instanceFields := []
+        instanceFields := TypedArray(IR.Field)
 
         /**
          * Nested class declarations.
          * @type {Array<IR.ClassDecl>}
          */
-        nestedClasses := []
+        nestedClasses := TypedArray(IR.ClassDecl)
 
         ; --- Analysis metadata ---
 
@@ -666,7 +672,7 @@ class IR {
          * Argument expressions.
          * @type {Array<IR.Node>}
          */
-        args := []
+        args := TypedArray(IR.Node)
 
         /**
          * True for call_statement (command-style, no parens).
@@ -784,7 +790,7 @@ class IR {
          * Index argument(s).
          * @type {Array<IR.Node>}
          */
-        args := []
+        args := TypedArray(IR.Node)
     }
 
     /**
@@ -796,7 +802,7 @@ class IR {
          * Element expressions.
          * @type {Array<IR.Node>}
          */
-        elements := []
+        elements := TypedArray(IR.Node)
     }
 
     /**
@@ -845,7 +851,7 @@ class IR {
         /**
          * @type {Array<IR.Param>}
          */
-        params := []
+        params := TypedArray(IR.Param)
 
         /**
          * The body expression.
@@ -857,7 +863,7 @@ class IR {
          * Variables captured from enclosing scope.
          * @type {Array<String>}
          */
-        captures := []
+        captures := TypedArray(String)
 
         /**
          * The arrow's own scope.
@@ -929,7 +935,7 @@ class IR {
          * Loop variables (key, value, etc.).
          * @type {Array<IR.Identifier>}
          */
-        iterators := []
+        iterators := TypedArray(IR.Identifier)
 
         /**
          * What is being iterated.
@@ -992,7 +998,7 @@ class IR {
          * Case clauses.
          * @type {Array<IR.CaseClause>}
          */
-        cases := []
+        cases := TypedArray(IR.CaseClause)
 
         /**
          * The default clause, if any.
@@ -1010,13 +1016,13 @@ class IR {
          * The case value expressions (empty for default).
          * @type {Array<IR.Node>}
          */
-        values := []
+        values := TypedArray(IR.Node)
 
         /**
          * Statements in this case.
          * @type {Array<IR.Node>}
          */
-        body := []
+        body := TypedArray(IR.Node)
 
         /**
          * True for the default clause.
@@ -1038,7 +1044,7 @@ class IR {
         /**
          * @type {Array<IR.CatchClause>}
          */
-        catchClauses := []
+        catchClauses := TypedArray(IR.CatchClause)
 
         /**
          * Optional else block.
@@ -1062,7 +1068,7 @@ class IR {
          * Error class names to catch.
          * @type {Array<String>}
          */
-        errorTypes := []
+        errorTypes := TypedArray(String)
 
         /**
          * The variable the caught error is bound to.
