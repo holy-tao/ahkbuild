@@ -106,6 +106,26 @@ class IR {
         }
 
         /**
+         * Determines whether this node is a descendant of `other` by walking
+         * parents up to the root
+         * 
+         * @param {IR.Node} other the node to check against
+         * @returns 1 if `this` is a child of `other`, 0 otherwise 
+         */
+        IsDescendentOf(other) {
+            node := this.HasOwnProp("parent") && this.parent
+            while !(node is IR.Program) {
+                if node == other {
+                    return true
+                }
+
+                node := node.HasOwnProp("parent") && node.parent
+            }
+
+            return false
+        }
+
+        /**
          * Whether this node has been transformed from its original source.
          * @type {Boolean}
          */

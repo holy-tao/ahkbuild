@@ -483,6 +483,27 @@ class MemberPruningTests {
             Assert.NotInStr(shaken, "DefineProp")
         }
 
+        SelfReferencedProp_IsPruned() {
+            code := "
+            ( comments
+                class MyClass {
+                    __New() {
+                        ; "Unused" is only referenced inside the DefineProp call, so it should get pruned
+                        this.DefineProp("Unused", {Call: MyClass.Unused})
+                    }
+
+                    static Unused() => 0
+                }
+
+                obj := MyClass()
+            )"
+
+            shaken := BuildTester.TreeShake(code)
+            Assert.NotInStr(shaken, "static Unused() => 0")
+            Assert.NotInStr(shaken, "this.DefineProp(`"Unused`", {Call: MyClass.Unused})")
+            Assert.NotInStr(shaken, "DefineProp")
+        }
+
         ReferencedProp_Survives() {
             code := "
             ( comments

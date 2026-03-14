@@ -10,6 +10,8 @@
 #Include ir.ahk
 #Include scope.ahk
 #Include <log4ahk\Log>
+#Include <Collections\Typed\TypedMap>
+#Include <Collections\Typed\TypedArray>
 
 /**
  * Tracks all member names referenced anywhere in the program.
@@ -21,13 +23,13 @@
 class MemberNameTable {
 
     /** @type {Map} case-insensitive: lowercase name -> IR.Node[] */
-    exactNames := Map()
+    exactNames := TypedMap(String, TypedArray)
 
     /** @type {Map} lowercase prefix strings -> IR.Node[]*/
-    prefixPatterns := Map()
+    prefixPatterns := TypedMap(String, TypedArray)
 
     /** @type {Map} lowercase suffix strings -> IR.Node[]*/
-    suffixPatterns := Map()
+    suffixPatterns := TypedMap(String, TypedArray)
 
     /** @type {Boolean} true if analysis is defeated by fully-dynamic access */
     isBlownUp := false
@@ -42,9 +44,9 @@ class MemberNameTable {
 
         if !this.exactNames.Has(name) {
             Log.Trace(Format("Adding exact name to member name table: '{1}' (referenced at '{2}')", name, node.GetText()))
-            this.exactNames[name] := Array()
+            this.exactNames[name] := TypedArray(IR.Node)
         }
-        this.exactNames[name].Push(name)
+        this.exactNames[name].Push(node)
     }
 
     /**
@@ -55,7 +57,7 @@ class MemberNameTable {
         prefix := this._Normalize(prefix)
         if prefix != "" && !this.prefixPatterns.Has(prefix) {
             Log.Trace(Format("Adding prefix to member name table: '{1}' (referenced at '{2}')", prefix, node.GetText()))
-            this.prefixPatterns[prefix] := Array()
+            this.prefixPatterns[prefix] := TypedArray(IR.Node)
         }
 
         this.prefixPatterns[prefix].Push(prefix)
@@ -69,7 +71,7 @@ class MemberNameTable {
         suffix := this._Normalize(suffix)
         if suffix != "" && !this.suffixPatterns.Has(suffix) {
             Log.Trace(Format("Adding suffix to member name table: '{1}' (referenced at '{2}')", suffix, node.GetText()))
-            this.suffixPatterns[suffix] := Array()
+            this.suffixPatterns[suffix] := TypedArray(IR.Node)
         }
 
         this.suffixPatterns[suffix].Push(suffix)
@@ -86,7 +88,8 @@ class MemberNameTable {
      * Check if `name` could be referenced based on collected data.
      *
      * @param {String} name the member name to check
-     * @returns {IR.Node[] | 0} the nodes that reference the name (if a prefix / suffix, this is empty)
+     * @returns {IR.Node[] | 0} the nodes that reference the name (if a prefix / suffix, this is empty), or 0
+     *              if no match
      */
     Matches(name) {
         if this.isBlownUp
@@ -105,6 +108,45 @@ class MemberNameTable {
                 return nodes
 
         return 0
+    }
+
+    /**
+     * Removes all descendants of `parent` from the table, deleting keys if they become
+     * empty
+     * 
+     * @param {IR.Node} parent the node whose descendants you want to remove 
+     */
+    RemoveDescendantReferencers(parent) {
+        this._CleanMap(parent, this.exactNames)
+        this._CleanMap(parent, this.prefixPatterns)
+        this._CleanMap(parent, this.suffixPatterns)
+
+        for child in parent.children {
+            this.RemoveDescendantReferencers(child)
+        }
+    }
+
+    /**
+     * Remove referencers that are descendants of `parent` from a name map,
+     * deleting keys whose arrays become empty.
+     *
+     * @param {IR.Node} parent
+     * @param {Map<String, IR.Node[]>} map  name -> referencers
+     */
+    _CleanMap(parent, map) {
+        for name, nodes in map {
+            i := nodes.Length
+            while i >= 1 {
+                if nodes[i].IsDescendentOf(parent)
+                    nodes.RemoveAt(i)
+                i--
+            }
+
+            if nodes.Length == 0 {
+                Log.Trace(Format("Removing '{1}' from name map; all referencers pruned", name))
+                map.Delete(name)
+            }
+        }
     }
 
     _Normalize(name) => Trim(StrLower(name), " `r`n`t")
@@ -638,9 +680,11 @@ class TreeShaker {
         if TreeShaker.ProtectedMembers.Has(propName)
             return false
 
-        ; Keep if the name is referenced anywhere
-        if nameTable.Matches(propName)
-            return false
+        ; Keep if the name is referenced anywhere outside of the DefineProp call itself
+        if referencers := nameTable.Matches(propName) {
+            if (referencers.Length > 1) || !referencers[1].IsDescendentOf(callNode)
+                return false
+        }
 
         ; Only prune standalone statement calls (parent is Block or Program)
         if !callNode.HasOwnProp("parent")
@@ -655,6 +699,8 @@ class TreeShaker {
 
         Log.Trace(Format("Pruning DefineProp call: property '{1}' is never referenced", propName))
         callNode.deleted := true
+        ; Remove name table entries contributed by nodes inside this pruned call
+        nameTable.RemoveDescendantReferencers(callNode)
         return true
     }
 }
