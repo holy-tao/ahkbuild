@@ -60,7 +60,7 @@ class MemberNameTable {
             this.prefixPatterns[prefix] := TypedArray(IR.Node)
         }
 
-        this.prefixPatterns[prefix].Push(prefix)
+        this.prefixPatterns[prefix].Push(node)
     }
 
     /**
@@ -74,7 +74,7 @@ class MemberNameTable {
             this.suffixPatterns[suffix] := TypedArray(IR.Node)
         }
 
-        this.suffixPatterns[suffix].Push(suffix)
+        this.suffixPatterns[suffix].Push(node)
     }
 
     /**
@@ -471,9 +471,13 @@ class TreeShaker {
                     outerSuffix := child.Text
                 }
                 hasConstant := true
-            } else if childType == "dereference_operation" {
+            } 
+            else if childType == "dereference_operation" {
                 derefNodes.Push(child)
                 outerSuffix := "" ; reset suffix, we only want the trailing one
+            }
+            else {
+                throw TypeError("Unsupported node type in dynamic identifier: " childType)
             }
 
             i++
@@ -576,7 +580,7 @@ class TreeShaker {
     _ExtractStringExprParts(expr, table, contextNode, prefix := "", suffix := "") {
         if expr is IR.Literal && expr.literalType == "string" {
             ; Exact string literal
-            table.AddExact(prefix . expr.value . suffix, contextNode.GetText())
+            table.AddExact(prefix . expr.value . suffix, contextNode)
             return
         }
 

@@ -34,7 +34,7 @@ class TreeShakeTests {
             ( comments
                 Transitive() => "Hello"
                 Outer() {
-                    Transitive() "World"
+                    return Transitive() "World"
                 }
                 
                 MsgBox(Outer())
