@@ -185,9 +185,9 @@ class TreeShaker {
     static _BuildReflectionMap() {
         m := Map()
         m.CaseSense := "Off"
-        m["ObjBindMethod"]     := {argIndex: 2}
-        m["ObjGetOwnPropDesc"] := {argIndex: 1}
-        m["GetMethod"]         := {argIndex: 2}
+        m["ObjBindMethod"]      := {argIndex: 2}
+        m["GetOwnPropDesc"]     := {argIndex: 1}
+        m["GetMethod"]          := {argIndex: 2}
         return m
     }
 
