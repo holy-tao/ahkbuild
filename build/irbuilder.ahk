@@ -228,6 +228,8 @@ class IRBuilder {
                 return this._BuildObjectLiteral(parent, tsNode, scope)
             case "dereference_operation":
                 return this._BuildDerefExpr(parent, tsNode, scope)
+            case "dynamic_identifier":
+                return this._BuildDynamicIdentifier(parent, tsNode, scope)
             case "varref_operation":
                 return this._BuildVarRefExpr(parent, tsNode, scope)
             case "fat_arrow_function":
@@ -1119,6 +1121,19 @@ class IRBuilder {
 
         parent.children.Push(deref)
         return deref
+    }
+
+    _BuildDynamicIdentifier(parent, tsNode, scope) {
+        ident := IR.DynamicIdentifier(parent, tsNode)
+
+        i := 0
+        while i < tsNode.NamedChildCount {
+            this._BuildNode(ident, tsNode.GetNamedChild(i), scope)
+            i++
+        }
+
+        parent.children.Push(ident)
+        return ident
     }
 
     /**
