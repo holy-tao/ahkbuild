@@ -22,6 +22,29 @@ class IR {
     }
 
     ; =========================================================================
+    ; 1.0 DirectiveComment (metadata, not an IR node)
+    ; =========================================================================
+
+    /**
+     * A parsed directive comment (`;@Name arguments`). Attached as metadata to
+     * the following statement-level IR node. Not part of the IR tree itself.
+     */
+    class DirectiveComment {
+        /** @type {String} directive name, case-preserved */
+        name := ""
+        /** @type {String} raw argument string after the directive name */
+        arguments := ""
+        /** @type {TSNode} original directive_comment node */
+        tsNode := unset
+
+        __New(name, arguments, tsNode) {
+            this.name := name
+            this.arguments := arguments
+            this.tsNode := tsNode
+        }
+    }
+
+    ; =========================================================================
     ; 1.1 Base & Structural Nodes
     ; =========================================================================
 
@@ -124,6 +147,53 @@ class IR {
          * @type {Boolean}
          */
         IsTransformed => this.HasOwnProp("_overrideText") || this.deleted
+
+        ; --- Directive comments ---
+
+        /**
+         * Attaches a parsed directive comment to this node.
+         * @param {IR.DirectiveComment} directive
+         */
+        AddDirective(directive) {
+            if !this.HasOwnProp("_directives")
+                this._directives := TypedArray(IR.DirectiveComment)
+            this._directives.Push(directive)
+        }
+
+        /**
+         * Whether this node has an attached directive with the given name.
+         * Comparison is case-insensitive.
+         * @param {String} name
+         * @returns {Boolean}
+         */
+        HasDirective(name) {
+            if !this.HasOwnProp("_directives")
+                return false
+
+            for d in this._directives
+                if d.name = name
+                    return true
+            return false
+        }
+
+        /**
+         * Returns the first attached directive with the given name, or an empty string.
+         * @param {String} name
+         * @returns {IR.DirectiveComment}
+         */
+        GetDirective(name) {
+            if this.HasOwnProp("_directives")
+                for d in this._directives
+                    if d.name = name
+                        return d
+            return ""
+        }
+
+        /**
+         * All attached directive comments, or an empty array.
+         * @type {Array<IR.DirectiveComment>}
+         */
+        Directives => this.HasOwnProp("_directives") ? this._directives : []
 
         /**
          * Returns a string that can be used to pretty-print the IR tree
@@ -304,7 +374,7 @@ class IR {
          * True if the function body is empty
          * @type {Boolean}
          */
-        isEmpty := this.body is IR.Block && this.body.isEmpty
+        isEmpty => this.HasOwnProp("body") && this.body is IR.Block && this.body.isEmpty
 
         /**
          * True if function has side effects (set by analysis).

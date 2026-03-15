@@ -121,9 +121,15 @@ class Emitter {
      * @param {IR.Node} node the node to walk
      */
     _Walk(node) {
-        ; Deleted nodes produce a deletion patch (empty replacement)
+        ; Deleted nodes produce a deletion patch (empty replacement).
+        ; If the node has attached directive comments, extend the patch
+        ; to cover their byte ranges as well.
         if node.deleted {
-            this.patches.Push(Patch(node.start, node.end, ""))
+            patchStart := node.start
+            directives := node.Directives
+            if directives.Length > 0
+                patchStart := directives[1].tsNode.StartByte
+            this.patches.Push(Patch(patchStart, node.end, ""))
             return
         }
 

@@ -85,18 +85,68 @@ class IRBuilder {
 
 ;@region Construction
 
+    ; -----------------------------------------------------------------
+    ; Directive comment helpers
+    ; -----------------------------------------------------------------
+
+    /**
+     * Parses a directive_comment TSNode into an IR.DirectiveComment.
+     * @param {TSNode} tsNode a directive_comment node
+     * @returns {IR.DirectiveComment}
+     */
+    _ParseDirectiveComment(tsNode) {
+        nameNode := tsNode.GetChildByFieldName("directive")
+        argsNode := tsNode.GetChildByFieldName("arguments")
+
+        name := nameNode.IsNull ? "" : nameNode.Text 
+        arguments := argsNode.IsNull ? "" : Trim(argsNode.Text)
+        return IR.DirectiveComment(name, arguments, tsNode)
+    }
+
+    /**
+     * Attaches pending directives to an IR node and clears the pending list.
+     * @param {IR.Node} irNode the node to attach directives to
+     * @param {Array<IR.DirectiveComment>} pending accumulated directives
+     */
+    _AttachDirectives(irNode, pending) {
+        for d in pending
+            irNode.AddDirective(d)
+        pending.Length := 0
+    }
+
+    /**
+     * Warns about trailing directive comments that have no following statement.
+     * @param {Array<IR.DirectiveComment>} pending leftover directives
+     */
+    _WarnTrailingDirectives(pending) {
+        for d in pending
+            Log.Warn("Directive ``;@" d.name "`` has no following statement")
+    }
+
+    ; -----------------------------------------------------------------
+    ; Top-level and block building
+    ; -----------------------------------------------------------------
+
     /**
      * Walk the top-level children of the source_file node.
      * @param {TSNode} root the source_file TSNode
      */
     _BuildTopLevel(root) {
+        pendingDirectives := []
         i := 0
         while i < root.NamedChildCount {
             child := root.GetNamedChild(i)
+            if child.Type == "directive_comment" {
+                pendingDirectives.Push(this._ParseDirectiveComment(child))
+                i++
+                continue
+            }
             irNode := this._BuildNode(this.program, child, this.globalScope)
+            this._AttachDirectives(irNode, pendingDirectives)
             this.program.body.Push(irNode)
             i++
         }
+        this._WarnTrailingDirectives(pendingDirectives)
     }
 
     /**
@@ -497,32 +547,42 @@ class IRBuilder {
      * Walk the children of a class_body node and populate the class.
      */
     _BuildClassBody(cls, classBodyNode, classScope) {
+        pendingDirectives := []
         i := 0
         while i < classBodyNode.NamedChildCount {
             child := classBodyNode.GetNamedChild(i)
+            if child.Type == "directive_comment" {
+                pendingDirectives.Push(this._ParseDirectiveComment(child))
+                i++
+                continue
+            }
+            irNode := unset
             switch child.Type {
                 case "method_declaration":
-                    method := this._BuildFunction(cls, child, classScope, true)
-                    cls.methods.Push(method)
+                    irNode := this._BuildFunction(cls, child, classScope, true)
+                    cls.methods.Push(irNode)
                 case "property_declaration":
-                    node := this._BuildPropertyOrField(cls, child, classScope)
-                    if node is IR.Property
-                        cls.properties.Push(node)
-                    else if node is IR.Field {
-                        if node.scope == "static"
-                            cls.staticFields.Push(node)
+                    irNode := this._BuildPropertyOrField(cls, child, classScope)
+                    if irNode is IR.Property
+                        cls.properties.Push(irNode)
+                    else if irNode is IR.Field {
+                        if irNode.scope == "static"
+                            cls.staticFields.Push(irNode)
                         else
-                            cls.instanceFields.Push(node)
+                            cls.instanceFields.Push(irNode)
                     }
                 case "class_declaration":
-                    nested := this._BuildClass(cls, child, classScope)
-                    cls.nestedClasses.Push(nested)
+                    irNode := this._BuildClass(cls, child, classScope)
+                    cls.nestedClasses.Push(irNode)
                 default:
                     ; Other things in class body — opaque
-                    this._BuildOpaque(cls, child)
+                    irNode := this._BuildOpaque(cls, child)
             }
+            if IsSet(irNode)
+                this._AttachDirectives(irNode, pendingDirectives)
             i++
         }
+        this._WarnTrailingDirectives(pendingDirectives)
     }
 
     /**
@@ -1568,13 +1628,21 @@ class IRBuilder {
         blk := IR.Block(parent, tsNode)
         blk.scope := scope
 
+        pendingDirectives := []
         i := 0
         while i < tsNode.NamedChildCount {
             child := tsNode.GetNamedChild(i)
+            if child.Type == "directive_comment" {
+                pendingDirectives.Push(this._ParseDirectiveComment(child))
+                i++
+                continue
+            }
             node := this._BuildNode(blk, child, scope)
+            this._AttachDirectives(node, pendingDirectives)
             blk.body.Push(node)
             i++
         }
+        this._WarnTrailingDirectives(pendingDirectives)
 
         parent.children.Push(blk)
         return blk
