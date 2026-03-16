@@ -7,12 +7,12 @@
 
 #Requires AutoHotkey v2.0
 
+#Include ir.ahk
+#Include scope.ahk
+
 #Include <log4ahk\Log>
 #Include <tree-sitter\TSNode>
 #Include <tree-sitter\TSTreeCursor>
-
-#Include ir.ahk
-#Include scope.ahk
 
 /**
  * Builds an IR tree from a tree-sitter AST in two phases:

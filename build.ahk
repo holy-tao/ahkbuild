@@ -1,21 +1,21 @@
 #Requires AutoHotkey v2.0
 #SingleInstance Off
 
+#Include .\build\astbuilder.ahk
+#Include .\build\irbuilder.ahk
+#Include .\build\treeshake.ahk
+#Include .\build\emitter.ahk
+
 #Include <Extensions\Errors\All>
 #Include <argparse\ArgumentParser>
 #Include <log4ahk\Log>
 #Include <log4ahk\appenders\FileAppender>
 #Include <tree-sitter\TSLanguage>
 #Include <tree-sitter\TSParser>
+#Include Lib\utils.ahk
 
-#Include ../Common/utils.ahk
-#Include astbuilder.ahk
-#Include irbuilder.ahk
-#Include treeshake.ahk
-#Include emitter.ahk
-
-#DllLoad ../bin/tree-sitter.dll
-#DllLoad ../bin/tree-sitter-autohotkey.dll
+#DllLoad .\bin\tree-sitter.dll
+#DllLoad .\bin\tree-sitter-autohotkey.dll
 
 Main(cmdLine := A_Args) {
     args := ParseCommandLine(cmdLine)

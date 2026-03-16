@@ -29,8 +29,7 @@
 #Include <argparse\ArgumentParser>
 #Include <log4ahk\Log>
 #Include <log4ahk\appenders\FileAppender>
-
-#Include ../Common/utils.ahk
+#Include Lib\utils.ahk
 
 ;@Ahk2Exe-ConsoleApp
 ;@Ahk2Exe-SetCopyright Copyright 2026 Tao Beloney

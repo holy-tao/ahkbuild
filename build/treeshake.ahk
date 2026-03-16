@@ -9,9 +9,10 @@
 
 #Include ir.ahk
 #Include scope.ahk
+
 #Include <log4ahk\Log>
-#Include <Collections\Typed\TypedMap>
 #Include <Collections\Typed\TypedArray>
+#Include <Collections\Typed\TypedMap>
 
 /**
  * Tracks all member names referenced anywhere in the program.

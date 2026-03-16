@@ -17,9 +17,6 @@
 #Include <tree-sitter\TSQuery>
 #Include <tree-sitter\TSQueryCursor>
 
-#DllLoad ../bin/tree-sitter.dll
-#DllLoad ../bin/tree-sitter-autohotkey.dll
-
 /**
  * Loads a file into memory and builds a tree-sitter AST. If there are errors, displays those errors
  * and quits immediately.
