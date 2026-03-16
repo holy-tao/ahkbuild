@@ -124,7 +124,7 @@ class Emitter {
         ; Deleted nodes produce a deletion patch (empty replacement).
         ; If the node has attached directive comments, extend the patch
         ; to cover their byte ranges as well.
-        if node.deleted {
+        if node.deleted && !node.HasDirective("AhkBuild-Keep") {
             patchStart := node.start
             directives := node.Directives
             if directives.Length > 0

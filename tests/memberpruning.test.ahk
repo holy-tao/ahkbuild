@@ -42,6 +42,24 @@ class MemberPruningTests {
             Assert.InStr(shaken, "Bar() => `"bar`"")
         }
 
+        UnreferencedMethod_WithKeepDirective_IsKept() {
+            code := "
+            (
+                class MyClass {
+                    Used() => 1
+                    ;@AhkBuild-Keep
+                    Unused() => 0
+                }
+
+                obj := MyClass()
+                obj.Used()
+            )"
+
+            shaken := BuildTester.TreeShake(code)
+            Assert.InStr(shaken, "Used() => 1")
+            Assert.InStr(shaken, "Unused")
+        }
+
         UnreferencedProperty_IsPruned() {
             code := "
             ( comments
