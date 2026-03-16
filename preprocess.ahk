@@ -267,10 +267,11 @@ ResolveInclude(statement, currentFile) {
         Log.Trace(Format("Searching library folders for {1}", match.path))
         
         SplitPath(A_AhkPath, , &ahkDir := "")
+        SplitPath(args.input, , &mainFileDir := "")
 
         ; Order is important - local -> user -> standard
         searchPaths := [
-            fileDir "\Lib\" match.path ".ahk",                      ; Local lib
+            mainFileDir "\Lib\" match.path ".ahk",                  ; Local lib
             A_MyDocuments "\AutoHotkey\Lib\" match.path ".ahk",     ; User lib
             ahkDir "\Lib\" match.path ".ahk"                        
         ]
