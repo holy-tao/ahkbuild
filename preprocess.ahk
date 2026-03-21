@@ -41,25 +41,25 @@
 
 args := ParseCommandLine()
 
-FileAppend("", args.loglocation)
+FileAppend("", args["loglocation"])
 
-Log.Configure(args.loglevel)
+Log.Configure(args["loglevel"])
     .ToLogger(Log.Logger()
-        .WithAppender(FileAppender(args.loglocation, 50))
+        .WithAppender(FileAppender(args["loglocation"], 50))
         .WithAppender(ConsoleAppender().WithPattern("{Level}: {Message}"))
 )
 
-if(FileExist(args.output) && !args.overwrite) {
+if(FileExist(args["output"]) && !args["overwrite"]) {
     Log.Fatal(Format(
         "Output file '{1}' already exists.`r`nSpecify --overwrite or -o to overwrite it if this is intentional.",
-        args.output
+        args["output"]
     ))
     ExitApp(1)
 }
 
-if(!args.dryrun) {
+if(!args["dryrun"]) {
     ; NOTE: this means outFile will be unset in a dry run
-    outFile := FileOpen(args.output, "w-")
+    outFile := FileOpen(args["output"], "w-")
     OnError((*) => outFile.Close())
 }
 else {
@@ -69,8 +69,8 @@ else {
 OnError((thrown, mode) => (Log.LogMessage(mode == "ExitApp" ? Log.Level.FATAL : Log.Level.ERROR, thrown), 1))
 
 includeMap := Map()
-includeMap[args.input] := true
-ParseInclude(args.input, outFile, includeMap, true)
+includeMap[args["input"]] := true
+ParseInclude(args["input"], outFile, includeMap, true)
 
 summary := Format("Included {1} file(s):", includeMap.Count)
 for (key, val in includeMap) {
@@ -142,7 +142,7 @@ ParseInclude(input, output, includeMap, isRoot := false, includeChain := []) {
             }
             continue
         }
-        else if(!args.keepComments && line.StartsWith("/*")) {
+        else if(!args["keepComments"] && line.StartsWith("/*")) {
             Log.Trace(Format("Block comment beginning at line {1}: '{2}'", A_Index, A_LoopReadLine))
 
             ; Handle single-line block comments
@@ -152,14 +152,14 @@ ParseInclude(input, output, includeMap, isRoot := false, includeChain := []) {
         }
 
         ; Check for regular comments, but keep directive-like comments
-        if(!args.keepComments && line.StartsWith(";") && !line.StartsWith(";@")) {
+        if(!args["keepComments"] && line.StartsWith(";") && !line.StartsWith(";@")) {
             ; Comment but not directive (;@ahk2exe, etc)
             Log.Trace(Format("Ignoring comment at line {1}: '{2}'", A_Index, A_LoopReadLine))
             continue
         }
 
         ; Check for empty lines
-        if (line == "" && !args.keepEmptyLines) {
+        if (line == "" && !args["keepEmptyLines"]) {
             continue
         }
         
@@ -209,20 +209,20 @@ ParseInclude(input, output, includeMap, isRoot := false, includeChain := []) {
         }
 
         finalLine := A_LoopReadLine
-        if(args.bitness != "any") {
-            finalLine := StrReplace(finalLine, "A_PtrSize", args.bitness == "32" ? "4" : "8")
+        if(args["bitness"] != "any") {
+            finalLine := StrReplace(finalLine, "A_PtrSize", args["bitness"] == "32" ? "4" : "8")
         }
-        if(args.compiled) {
+        if(args["compiled"]) {
             finalLine := StrReplace(finalLine, "A_IsCompiled", "true")
         }
-        if(args.dedent) {
+        if(args["dedent"]) {
             finalLine := LTrim(finalLine)
         }
-        if(!args.keepComments) {
+        if(!args["keepComments"]) {
             finalLine := TrimTrailingComment(finalLine)
         }
 
-        if(!args.dryrun) {
+        if(!args["dryrun"]) {
             output.WriteLine(finalLine)
         }
     }
@@ -267,7 +267,7 @@ ResolveInclude(statement, currentFile) {
         Log.Trace(Format("Searching library folders for {1}", match.path))
         
         SplitPath(A_AhkPath, , &ahkDir := "")
-        SplitPath(args.input, , &mainFileDir := "")
+        SplitPath(args["input"], , &mainFileDir := "")
 
         ; Order is important - local -> user -> standard
         searchPaths := [

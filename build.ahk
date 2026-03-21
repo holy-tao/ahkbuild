@@ -14,51 +14,53 @@
 #Include <tree-sitter\TSParser>
 #Include Lib\utils.ahk
 
+#Include <extensions\ObjectExtensions>
+
 #DllLoad .\bin\tree-sitter.dll
 #DllLoad .\bin\tree-sitter-autohotkey.dll
 
 Main(cmdLine := A_Args) {
     args := ParseCommandLine(cmdLine)
 
-    FileAppend("", args.loglocation)
+    FileAppend("", args["loglocation"])
 
-    Log.Configure(args.loglevel)
+    Log.Configure(args["loglevel"])
         .ToLogger(Log.Logger()
-            .WithAppender(FileAppender(args.loglocation, 50))
+            .WithAppender(FileAppender(args["loglocation"], 50))
             .WithAppender(ConsoleAppender().WithPattern("{Level}: {Message}"))
     )
 
     ; All uncaught errors are fatal
     OnError((thrown, mode) => (Log.Fatal(thrown), ExitApp(1)))
 
-    if(FileExist(args.output) && !args.overwrite) {
+    if(FileExist(args["output"]) && !args["overwrite"]) {
         Log.Fatal(Format(
             "Output file '{1}' already exists.`r`nSpecify --overwrite or -o to overwrite it if this is intentional.",
-            args.output
+            args["output"]
         ))
         ExitApp(1)
     }
 
-    ast := BuildAST(args.input)
+    ast := BuildAST(args["input"])
 
     ; Build IR from the AST
     builder := IRBuilder()
-    program := builder.Build(ast, FileRead(args.input, "RAW"))
+    program := builder.Build(ast, FileRead(args["input"], "RAW"))
 
     Log.Info(Format("IR complete: {1} top-level nodes", program.body.Length))
     if Log.CurrentLevel <= Log.Level.TRACE {
         Log.Trace("Symbol table:`r`n" builder.symbolTable.TraceDump())
     }
 
-    if(args.HasProp("dumpBeforeIr") && args.dumpBeforeIr != "") {
-        irFile := FileOpen(args.dumpBeforeIr, "w", "UTF-8")
+    if(args.Has("dumpBeforeIr") && args["dumpBeforeIr"] != "") {
+        irFile := FileOpen(args["dumpBeforeIr"], "w", "UTF-8")
         irFile.Write(program.ToDetailedString())
         irFile.Close()
-        Log.Info("Intermediate representation before transformations written to: " args.dumpBeforeIr)
+        Log.Info("Intermediate representation before transformations written to: " args["dumpBeforeIr"])
     }
 
     ; Tree-shaking pass
-    if args.treeShake {
+    if args["treeShake"] {
         shaker := TreeShaker()
         dead := shaker.Run(program)
         Log.Info(Format("Tree-shaking removed {1} dead symbols", dead.Length))
@@ -67,9 +69,9 @@ Main(cmdLine := A_Args) {
         }
     }
 
-    Log.Info("Writing output to " args.output "...")
+    Log.Info("Writing output to " args["output"] "...")
     writer := Emitter()
-    outFile := FileOpen(args.output, "w", "UTF-8")
+    outFile := FileOpen(args["output"], "w", "UTF-8")
     outFile.Write(writer.Emit(program))
     outFile.Close()
 
