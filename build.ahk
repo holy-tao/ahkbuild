@@ -19,6 +19,8 @@
 #DllLoad .\bin\tree-sitter.dll
 #DllLoad .\bin\tree-sitter-autohotkey.dll
 
+;@Ahk2Exe-ConsoleApp
+
 Main(cmdLine := A_Args) {
     args := ParseCommandLine(cmdLine)
 
