@@ -22,7 +22,7 @@ class BuildTester {
         
         FileAppend(filecontents, tmpFile)
 
-        buildScriptPath := CmdExpect("git rev-parse --show-toplevel") "\build\build.ahk"
+        buildScriptPath := CmdExpect("git rev-parse --show-toplevel") "\build.ahk"
         cmd := Format('"{1}" "{2}" "{3}" "{4}" --tree-shake --overwrite --log=TRACE --log-file={5}',
             A_AhkPath, buildScriptPath, tmpFile, outFile, logFile)
 
