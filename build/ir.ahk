@@ -167,12 +167,15 @@ class IR {
          * @returns {Boolean}
          */
         HasDirective(name) {
-            if !this.HasOwnProp("_directives")
-                return false
+            node := this
 
-            for d in this._directives
-                if d.name = name
+            ; Loop upwards until the end of the statement
+            while !(node is IR.Program || node is IR.Block || node is IR.ClassDecl) {
+                if node.GetDirective(name)
                     return true
+                node := node.parent
+            }
+            
             return false
         }
 
@@ -182,10 +185,9 @@ class IR {
          * @returns {IR.DirectiveComment}
          */
         GetDirective(name) {
-            if this.HasOwnProp("_directives")
-                for d in this._directives
-                    if d.name = name
-                        return d
+            for d in this.Directives
+                if d.name = name
+                    return d
             return ""
         }
 
@@ -199,7 +201,7 @@ class IR {
          * Returns a string that can be used to pretty-print the IR tree
          */
         ToDetailedString(indent := "", isLast := true) {
-            nodeTextLine := Trim(SubStr(this.GetText(), 1, InStr(this.GetText(), "`n")), " `r`n`t")
+            nodeTextLine := Trim(StrReplace(StrReplace(this.GetText(), "`n"), "`t"))
             if(InStr(this.GetText(), "`n"))
                 nodeTextLine .= "..."
 
