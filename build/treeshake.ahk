@@ -10,6 +10,7 @@
 #Include ir.ahk
 #Include scope.ahk
 #Include membernametable.ahk
+#Include directives.ahk
 
 #Include <log4ahk\Log>
 
@@ -390,7 +391,19 @@ class TreeShaker {
             hasConstant := true
         }
 
-        ; No constant parts at all → analysis is defeated
+        ; Last resort, check for ResolvesTo directive
+        if resolvesToDirective := maNode.GetDirective("AhkBuild-ResolvesTo") {
+            Log.Debug(Format("Using ResolvesTo directive '{1}' for dynamic reference '{2}'", 
+                Trim(resolvesToDirective.arguments), Trim(maNode.GetText())))
+            names := Directives.ParseResolvesToArgs(resolvesToDirective.arguments)
+            for name in names {
+                table.AddExact(name, maNode)
+            }
+
+            hasConstant := true
+        }
+
+        ; No constant parts at all - analysis is defeated
         if !hasConstant {
             Log.Warn(Format("Member access with dereference expression '{1}' with no constant parts defeats member pruning", 
                 Trim(maNode.GetText())))
@@ -460,6 +473,18 @@ class TreeShaker {
 
             if hasConstant
                 return
+        }
+
+        ; Last resort, check for ResolvesTo directive
+        if resolvesToDirective := expr.GetDirective("AhkBuild-ResolvesTo") {
+            Log.Debug(Format("Using ResolvesTo directive '{1}' for dynamic reference '{2}'", 
+                Trim(resolvesToDirective.arguments), Trim(expr.GetText())))
+            names := Directives.ParseResolvesToArgs(resolvesToDirective.arguments)
+            for name in names {
+                table.AddExact(name, expr)
+            }
+
+            return
         }
 
         ; No constant parts extractable — analysis defeated

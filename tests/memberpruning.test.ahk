@@ -384,6 +384,28 @@ class MemberPruningTests {
             Assert.InStr(shaken, "Target")
             Assert.NotInStr(shaken, "Other")
         }
+
+        FullyDynamic_WithResolvesToDirective_KeepsResolvesToMembers() {
+            code := "
+            (
+                class MyClass {
+                    NeverCalled() => 0
+
+                    AlsoNeverCalled() => 1
+                }
+
+                obj := MyClass()
+                name := "anything"
+
+                ;@AhkBuild-ResolvesTo NeverCalled
+                obj.%name%()
+            )"
+
+            ; Fully dynamic access → member pruning disabled → NeverCalled kept
+            shaken := BuildTester.TreeShake(code)
+            Assert.InStr(shaken, "NeverCalled() => 0")
+            Assert.NotInStr(shaken, "AlsoNeverCalled() => 1")
+        }
     }
 
     class ReflectionFunctions {

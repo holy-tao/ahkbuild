@@ -171,7 +171,7 @@ class IR {
 
             ; Loop upwards until the end of the statement
             while !(node is IR.Program || node is IR.Block || node is IR.ClassDecl) {
-                if node.GetDirective(name)
+                if node._GetOwnDirective(name)
                     return true
                 node := node.parent
             }
@@ -185,6 +185,19 @@ class IR {
          * @returns {IR.DirectiveComment}
          */
         GetDirective(name) {
+            node := this
+
+            ; Loop upwards until the end of the statement
+            while !(node is IR.Program || node is IR.Block || node is IR.ClassDecl) {
+                if found := node._GetOwnDirective(name)
+                    return found
+                node := node.parent
+            }
+            
+            return ""
+        }
+
+        _GetOwnDirective(name) {
             for d in this.Directives
                 if d.name = name
                     return d
