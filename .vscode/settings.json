@@ -1,0 +1,7 @@
+{
+    "cmake.ignoreCMakeListsMissing": true,
+    "[rust]": {
+        "editor.defaultFormatter": "rust-lang.rust-analyzer",
+        "editor.formatOnSave": true
+    }
+}
