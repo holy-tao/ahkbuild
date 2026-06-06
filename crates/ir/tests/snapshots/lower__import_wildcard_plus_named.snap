@@ -1,0 +1,6 @@
+---
+source: crates/ir/tests/lower.rs
+expression: "ir(&fixture(\"probes/p9_import_brace_wildcard_named.ahk\"))"
+---
+Module "__Main" (implicit) [0, 21]
+  ImportDirective Y {*, Extra} [0, 20]

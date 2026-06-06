@@ -1,0 +1,8 @@
+---
+source: crates/ir/tests/lower.rs
+expression: "ir(&fixture(\"probes/p5_export_global.ahk\"))"
+---
+Module "__Main" (implicit) [0, 25]
+  ExportDecl [0, 24]
+    decl: VarDecl Global "MyVar" [14, 24]
+      init: Literal Integer "1" [23, 24]

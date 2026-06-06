@@ -1,0 +1,7 @@
+---
+source: crates/ir/tests/lower.rs
+expression: "ir(&fixture(\"probes/p7_export_default_class.ahk\"))"
+---
+Module "__Main" (implicit) [0, 29]
+  ExportDecl default [0, 28]
+    decl: ClassDecl "Foo" [15, 28]

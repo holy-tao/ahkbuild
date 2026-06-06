@@ -1,0 +1,17 @@
+---
+source: crates/ir/tests/lower.rs
+expression: "ir(\"\\\nstruct Point {\n    x: Int := 0\n    y: Int := 0\n    name: String\n}\n\")"
+---
+Module "__Main" (implicit) [0, 66]
+  StructDecl "Point" [0, 65]
+    typed field: TypedProperty "x" [19, 30]
+      type: TypeSpecifier [22, 25]
+        type: Identifier "Int" [22, 25]
+      init: Literal Integer "0" [29, 30]
+    typed field: TypedProperty "y" [31, 46]
+      type: TypeSpecifier [38, 41]
+        type: Identifier "Int" [38, 41]
+      init: Literal Integer "0" [45, 46]
+    typed field: TypedProperty "name" [51, 63]
+      type: TypeSpecifier [57, 63]
+        type: Identifier "String" [57, 63]

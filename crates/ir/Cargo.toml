@@ -8,3 +8,6 @@ publish = false
 
 [dependencies]
 ahkbuild-syntax.workspace = true
+
+[dev-dependencies]
+insta = "1"
