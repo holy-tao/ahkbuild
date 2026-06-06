@@ -1,0 +1,16 @@
+[package]
+name = "ahkbuild-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "ahkbuild"
+path = "src/main.rs"
+
+[dependencies]
+ahkbuild-syntax.workspace = true
+anyhow.workspace = true
+clap.workspace = true

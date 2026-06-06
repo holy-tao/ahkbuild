@@ -1,0 +1,24 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/syntax",
+    "crates/ir",
+    "crates/cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.96"
+repository = "https://github.com/holy-tao/ahkbuild"
+
+[workspace.dependencies]
+# External
+tree-sitter = "0.26"
+tree-sitter-autohotkey = { path = "vendor/tree-sitter-autohotkey" }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+
+# Internal
+ahkbuild-syntax = { path = "crates/syntax" }
+ahkbuild-ir = { path = "crates/ir" }

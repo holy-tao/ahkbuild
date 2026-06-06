@@ -2,3 +2,6 @@
 *.log
 bin/
 dist/
+
+# Rust
+/target/

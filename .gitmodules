@@ -16,3 +16,6 @@
 [submodule "Lib/collections"]
 	path = Lib/collections
 	url = git@github.com:holy-tao/ahkcollections.git
+[submodule "vendor/tree-sitter-autohotkey"]
+	path = vendor/tree-sitter-autohotkey
+	url = git@github.com:holy-tao/tree-sitter-autohotkey.git
