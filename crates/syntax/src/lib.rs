@@ -43,6 +43,97 @@ impl Span {
     }
 }
 
+/// A handle to a [`SourceFile`] within a [`SourceMap`].
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct FileId(pub u32);
+
+/// One physical source: the main script, an imported/embedded file, or (later) a
+/// `#Include`d fragment. `base` is where this file's bytes begin in the [`SourceMap`]'s
+/// global position space, so a [`Span`] uniquely identifies both a file and a range
+/// without carrying a `FileId` itself (keeping `Span` at two `u32`s).
+#[derive(Clone, Debug)]
+pub struct SourceFile {
+    pub id: FileId,
+    /// Path or resource label, for diagnostics / `A_LineFile` fidelity.
+    pub name: String,
+    pub text: String,
+    pub base: u32,
+}
+
+impl SourceFile {
+    /// One past this file's last global byte position.
+    pub fn end(&self) -> u32 {
+        self.base + self.text.len() as u32
+    }
+
+    /// Slice this file's own text for a global span lying within it.
+    fn slice(&self, span: Span) -> &str {
+        &self.text[(span.start - self.base) as usize..(span.end - self.base) as usize]
+    }
+}
+
+/// The set of physical sources behind a lowered program, laid out in one global byte
+/// position space (rustc-style). This is the single source of truth for span text and the
+/// origin axis for diagnostics; it is orthogonal to module *groups* (a group is a
+/// module-name namespace, and may span several files via `#Include`).
+#[derive(Clone, Debug, Default)]
+pub struct SourceMap {
+    files: Vec<SourceFile>,
+}
+
+impl SourceMap {
+    pub fn new() -> SourceMap {
+        SourceMap { files: Vec::new() }
+    }
+
+    /// A map holding a single file at base 0 (the current single-file pipeline).
+    pub fn single(name: impl Into<String>, text: impl Into<String>) -> (SourceMap, FileId) {
+        let mut m = SourceMap::new();
+        let id = m.add(name, text);
+        (m, id)
+    }
+
+    /// Append a file; its bytes occupy `[base, base + len)` where `base` follows the
+    /// previously added files. A non-entry file's lowered spans must be offset by its
+    /// `base` (see [`SourceMap::base`]) to be valid global positions.
+    pub fn add(&mut self, name: impl Into<String>, text: impl Into<String>) -> FileId {
+        let text = text.into();
+        let base = self.files.last().map_or(0, SourceFile::end);
+        let id = FileId(self.files.len() as u32);
+        self.files.push(SourceFile {
+            id,
+            name: name.into(),
+            text,
+            base,
+        });
+        id
+    }
+
+    pub fn file(&self, id: FileId) -> &SourceFile {
+        &self.files[id.0 as usize]
+    }
+
+    /// The global base offset of a file — what to add to its file-relative byte offsets.
+    pub fn base(&self, id: FileId) -> u32 {
+        self.file(id).base
+    }
+
+    pub fn files(&self) -> &[SourceFile] {
+        &self.files
+    }
+
+    /// The file whose byte range contains global position `pos`.
+    pub fn file_at(&self, pos: u32) -> &SourceFile {
+        let idx = self.files.partition_point(|f| f.base <= pos).saturating_sub(1);
+        &self.files[idx]
+    }
+
+    /// Slice the source text for a (global) span.
+    pub fn text(&self, span: Span) -> &str {
+        self.file_at(span.start).slice(span)
+    }
+}
+
 /// A parser preloaded with the AutoHotkey grammar.
 ///
 /// Panics only if the linked grammar is ABI-incompatible with this `tree-sitter`

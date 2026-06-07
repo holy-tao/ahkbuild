@@ -170,10 +170,14 @@ pub enum NodeKind {
     },
 }
 
-/// A module. `name` is the case-insensitive identity key (implicit module = `"__Main"`),
-/// so an explicit `#Module __Main` merges into the implicit one. `name_span` is `None` for
-/// the implicit module and `Some` for an explicit `#Module` directive (for emission). The
-/// node's own span anchors the first `#Module` directive, not a covering range.
+/// A module. `name` is the case-insensitive identity key *within its [`Group`]* (implicit
+/// module = `"__Main"`), so an explicit `#Module __Main` merges into the implicit one, but
+/// same-named modules in *different* groups stay distinct (see [`Group`]). `name_span` is
+/// `None` for the implicit module and `Some` for an explicit `#Module` directive (for
+/// emission). The node's own span anchors the first `#Module` directive, not a covering
+/// range.
+///
+/// [`Group`]: crate::program::Group
 #[derive(Clone, Debug)]
 pub struct Module {
     pub name: String,

@@ -10,14 +10,14 @@ pub mod node;
 pub mod print;
 pub mod program;
 
-// Re-exported so downstream crates have one canonical Span type.
-pub use ahkbuild_syntax::Span;
+// Re-exported so downstream crates have one canonical Span / source-map type.
+pub use ahkbuild_syntax::{FileId, SourceFile, SourceMap, Span};
 
 pub use arena::{Arena, Node, NodeId};
 pub use lower::lower;
 pub use node::NodeKind;
 pub use print::print_program;
-pub use program::Program;
+pub use program::{Group, GroupId, Program};
 
 #[cfg(test)]
 mod tests {
@@ -36,8 +36,8 @@ mod tests {
     #[test]
     fn implicit_main_module_holds_top_level() {
         let p = lower_str("x := 1\nMsgBox(x)\n");
-        assert_eq!(p.modules.len(), 1);
-        let NodeKind::Module(m) = &p.arena[p.modules[0]].kind else {
+        assert_eq!(p.groups[0].modules.len(), 1);
+        let NodeKind::Module(m) = &p.arena[p.groups[0].modules[0]].kind else {
             panic!("expected module");
         };
         assert!(m.is_main());
@@ -48,13 +48,13 @@ mod tests {
     #[test]
     fn module_directive_starts_a_module() {
         let p = lower_str("a := 1\n#Module Foo\nexport Bar() {\n  return 2\n}\n");
-        assert_eq!(p.modules.len(), 2);
-        let NodeKind::Module(main) = &p.arena[p.modules[0]].kind else {
+        assert_eq!(p.groups[0].modules.len(), 2);
+        let NodeKind::Module(main) = &p.arena[p.groups[0].modules[0]].kind else {
             panic!();
         };
         assert!(main.is_main());
         assert_eq!(main.body.len(), 1);
-        let NodeKind::Module(foo) = &p.arena[p.modules[1]].kind else {
+        let NodeKind::Module(foo) = &p.arena[p.groups[0].modules[1]].kind else {
             panic!();
         };
         assert_eq!(foo.name, "Foo");
@@ -71,8 +71,8 @@ mod tests {
     fn reopened_module_merges() {
         let p = lower_str("#Module Foo\na := 1\n#Module Bar\nb := 2\n#Module Foo\nc := 3\n");
         // Foo, Bar — Foo reopened, so still 3 modules total incl. __Main.
-        assert_eq!(p.modules.len(), 3);
-        let NodeKind::Module(foo) = &p.arena[p.modules[1]].kind else {
+        assert_eq!(p.groups[0].modules.len(), 3);
+        let NodeKind::Module(foo) = &p.arena[p.groups[0].modules[1]].kind else {
             panic!();
         };
         assert_eq!(foo.name, "Foo");
@@ -86,8 +86,8 @@ mod tests {
     #[test]
     fn explicit_main_merges_into_implicit() {
         let p = lower_str("a := 1\n#Module __Main\nb := 2\n");
-        assert_eq!(p.modules.len(), 1);
-        let NodeKind::Module(m) = &p.arena[p.modules[0]].kind else {
+        assert_eq!(p.groups[0].modules.len(), 1);
+        let NodeKind::Module(m) = &p.arena[p.groups[0].modules[0]].kind else {
             panic!();
         };
         assert_eq!(m.body.len(), 2);
@@ -97,7 +97,7 @@ mod tests {
     fn import_named_and_wildcard() {
         use node::{ImportBinding, ImportSource};
         let p = lower_str("#Import X {Calculate as CalculateX}\n#Import Y {*}\n");
-        let NodeKind::Module(m) = &p.arena[p.modules[0]].kind else {
+        let NodeKind::Module(m) = &p.arena[p.groups[0].modules[0]].kind else {
             panic!();
         };
         let NodeKind::ImportDirective(d0) = &p.arena[m.body[0]].kind else {
@@ -124,7 +124,7 @@ mod tests {
     #[test]
     fn typed_struct_fields() {
         let p = lower_str("struct Point {\n    x: Int := 5\n    name: String\n}\n");
-        let NodeKind::Module(m) = &p.arena[p.modules[0]].kind else {
+        let NodeKind::Module(m) = &p.arena[p.groups[0].modules[0]].kind else {
             panic!();
         };
         let NodeKind::StructDecl(t) = &p.arena[m.body[0]].kind else {
@@ -136,7 +136,7 @@ mod tests {
         let NodeKind::TypedProperty(x) = &p.arena[t.typed_fields[0]].kind else {
             panic!("expected typed property");
         };
-        assert_eq!(x.name.map(|s| s.text(&p.source)), Some("x"));
+        assert_eq!(x.name.map(|s| p.span_text(s)), Some("x"));
         assert!(x.initializer.is_some());
         let NodeKind::TypeSpecifier { type_expr } = &p.arena[x.type_spec].kind else {
             panic!("expected type specifier");
@@ -155,7 +155,7 @@ mod tests {
         // Per the grammar, `export Fn() => 1` is parsed as a call to `export`, not an
         // export declaration. Confirm it does not lower to ExportDecl.
         let p = lower_str("Calculate() => 1\n");
-        let NodeKind::Module(m) = &p.arena[p.modules[0]].kind else {
+        let NodeKind::Module(m) = &p.arena[p.groups[0].modules[0]].kind else {
             panic!();
         };
         // The function declaration lowers to a Function, and there is no ExportDecl.

@@ -11,14 +11,19 @@
 use std::collections::HashMap;
 
 use ahkbuild_syntax::tree_sitter::{Node, Tree};
-use ahkbuild_syntax::Span;
+use ahkbuild_syntax::{SourceMap, Span};
 
 use crate::arena::{Arena, NodeId};
 use crate::node::*;
-use crate::program::Program;
+use crate::program::{Group, GroupId, Program};
 
 /// Lower a parsed tree into an owned [`Program`].
+///
+/// This builds the single entry group from one preprocessed source file (base 0). The
+/// linker will later add one group per imported file/resource; a non-entry file's spans
+/// must then be offset by its [`SourceMap::base`].
 pub fn lower(tree: &Tree, source: &str) -> Program {
+    let (sources, file) = SourceMap::single("<main>", source);
     let mut l = Lowerer {
         arena: Arena::new(),
         source,
@@ -26,10 +31,15 @@ pub fn lower(tree: &Tree, source: &str) -> Program {
     };
     let (modules, main) = l.build_top_level(tree.root_node());
     let _ = main;
-    Program {
+    let entry = Group {
+        id: GroupId(0),
+        file,
         modules,
+    };
+    Program {
+        groups: vec![entry],
         arena: l.arena,
-        source: source.to_string(),
+        sources,
         directives: l.directives,
     }
 }

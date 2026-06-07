@@ -7,6 +7,8 @@
 
 use std::fmt::Write;
 
+use ahkbuild_syntax::Span;
+
 use crate::arena::NodeId;
 use crate::node::*;
 use crate::program::Program;
@@ -17,8 +19,11 @@ pub fn print_program(program: &Program) -> String {
         program,
         out: String::new(),
     };
-    for &module in &program.modules {
-        p.emit("", module, 0);
+    // Groups are printed transparently (no header) so single-group output is unchanged.
+    for group in &program.groups {
+        for &module in &group.modules {
+            p.emit("", module, 0);
+        }
     }
     p.out
 }
@@ -47,9 +52,9 @@ impl Printer<'_> {
     /// (name, operator, snippet) but never its full multi-line text.
     fn kind_summary(&self, id: NodeId) -> String {
         let node = &self.program.arena[id];
-        let src = &self.program.source;
-        let snippet = |span: ahkbuild_syntax::Span| -> String {
-            let t = span.text(src);
+        let prog = self.program;
+        let snippet = |span: Span| -> String {
+            let t = prog.span_text(span);
             let one = t.replace(['\n', '\r', '\t'], " ");
             let trimmed = one.trim();
             if trimmed.len() > 48 {
@@ -60,8 +65,8 @@ impl Printer<'_> {
                 trimmed.to_string()
             }
         };
-        let name_of = |s: &Option<ahkbuild_syntax::Span>| -> String {
-            s.map(|sp| sp.text(src).to_string()).unwrap_or_default()
+        let name_of = |s: &Option<Span>| -> String {
+            s.map(|sp| prog.span_text(sp).to_string()).unwrap_or_default()
         };
 
         match &node.kind {
@@ -118,10 +123,12 @@ impl Printer<'_> {
             NodeKind::VarDecl(v) => {
                 format!("VarDecl {:?} \"{}\"", v.scope, name_of(&v.name))
             }
-            NodeKind::BinaryExpr { op, .. } => format!("BinaryExpr \"{}\"", op.text(src).trim()),
+            NodeKind::BinaryExpr { op, .. } => {
+                format!("BinaryExpr \"{}\"", prog.span_text(*op).trim())
+            }
             NodeKind::UnaryExpr { op, prefix, .. } => format!(
                 "UnaryExpr \"{}\" ({})",
-                op.text(src).trim(),
+                prog.span_text(*op).trim(),
                 if *prefix { "prefix" } else { "postfix" }
             ),
             NodeKind::TernaryExpr { .. } => "TernaryExpr".into(),
@@ -157,7 +164,7 @@ impl Printer<'_> {
             }
             NodeKind::TryStmt(_) => "TryStmt".into(),
             NodeKind::CatchClause(c) => {
-                let types: Vec<&str> = c.error_types.iter().map(|s| s.text(src)).collect();
+                let types: Vec<&str> = c.error_types.iter().map(|s| prog.span_text(*s)).collect();
                 format!("CatchClause [{}]", types.join(", "))
             }
             NodeKind::ReturnStmt { .. } => "ReturnStmt".into(),
@@ -174,20 +181,20 @@ impl Printer<'_> {
 
     fn extends(&self, t: &TypeDecl) -> String {
         match &t.superclass {
-            Some(s) => format!(" extends {}", s.text(&self.program.source)),
+            Some(s) => format!(" extends {}", self.program.span_text(*s)),
             None => String::new(),
         }
     }
 
     fn import_summary(&self, d: &ImportDirective) -> String {
-        let src = &self.program.source;
+        let prog = self.program;
         let source = match &d.source {
-            ImportSource::Name(s) => s.text(src).to_string(),
-            ImportSource::Path(s) => s.text(src).to_string(),
+            ImportSource::Name(s) => prog.span_text(*s).to_string(),
+            ImportSource::Path(s) => prog.span_text(*s).to_string(),
         };
         let binding = match &d.binding {
             ImportBinding::Whole => String::new(),
-            ImportBinding::Alias(a) => format!(" as {}", a.text(src)),
+            ImportBinding::Alias(a) => format!(" as {}", prog.span_text(*a)),
             ImportBinding::Selective { wildcard, names } => {
                 let mut parts: Vec<String> = Vec::new();
                 if *wildcard {
@@ -195,8 +202,10 @@ impl Printer<'_> {
                 }
                 for n in names {
                     match &n.alias {
-                        Some(a) => parts.push(format!("{} as {}", n.name.text(src), a.text(src))),
-                        None => parts.push(n.name.text(src).to_string()),
+                        Some(a) => {
+                            parts.push(format!("{} as {}", prog.span_text(n.name), prog.span_text(*a)))
+                        }
+                        None => parts.push(prog.span_text(n.name).to_string()),
                     }
                 }
                 format!(" {{{}}}", parts.join(", "))
@@ -401,7 +410,7 @@ impl Printer<'_> {
         for p in params {
             let name = p
                 .name
-                .map(|s| s.text(&self.program.source).to_string())
+                .map(|s| self.program.span_text(s).to_string())
                 .unwrap_or_default();
             let mut flags = String::new();
             if p.by_ref {
