@@ -14,7 +14,7 @@ pub mod program;
 pub use ahkbuild_syntax::{FileId, SourceFile, SourceMap, Span};
 
 pub use arena::{Arena, Node, NodeId};
-pub use lower::{lower, Lowering};
+pub use lower::{lower, ImportSpec, Lowering};
 pub use node::NodeKind;
 pub use print::print_program;
 pub use program::{Group, GroupId, Program};

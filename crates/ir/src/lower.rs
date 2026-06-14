@@ -99,6 +99,81 @@ impl Lowering {
             directives: self.directives,
         }
     }
+
+    /// The module names defined in a group (as written). The linker uses these to tell an
+    /// in-group sub-module reference (`#Import Helper` where `#Module Helper` lives in the
+    /// same file) from a filesystem import — only the latter names a file.
+    pub fn group_module_names(&self, gid: GroupId) -> Vec<String> {
+        let Some(group) = self.groups.get(gid.0 as usize) else {
+            return Vec::new();
+        };
+        group
+            .modules
+            .iter()
+            .filter_map(|&m| match &self.arena[m].kind {
+                NodeKind::Module(module) => Some(module.name.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The `#Import` targets declared by a group's modules, in source order. The linker
+    /// uses this to discover and resolve the next files to load.
+    pub fn group_imports(&self, gid: GroupId) -> Vec<ImportSpec> {
+        let mut out = Vec::new();
+        let Some(group) = self.groups.get(gid.0 as usize) else {
+            return out;
+        };
+        for &m in &group.modules {
+            let NodeKind::Module(module) = &self.arena[m].kind else {
+                continue;
+            };
+            for &stmt in &module.body {
+                if let NodeKind::ImportDirective(d) = &self.arena[stmt].kind {
+                    let (quoted, span) = match &d.source {
+                        ImportSource::Name(s) => (false, *s),
+                        ImportSource::Path(s) => (true, *s),
+                    };
+                    let raw = self.sources.text(span);
+                    let spec = if quoted {
+                        unquote(raw)
+                    } else {
+                        raw.trim().to_string()
+                    };
+                    out.push(ImportSpec {
+                        quoted,
+                        spec,
+                        node: stmt,
+                    });
+                }
+            }
+        }
+        out
+    }
+}
+
+/// A single `#Import` target found in a group, for the linker to resolve.
+#[derive(Clone, Debug)]
+pub struct ImportSpec {
+    /// `true` if written as a quoted string (`#Import "X"`). Quoted imports don't bind a
+    /// name and also cover the embedded (`*RESNAME`) and path-qualified (`Path:Module`)
+    /// forms.
+    pub quoted: bool,
+    /// The target text: a bare module name, a path, `*RESNAME`, or `Path:Module`.
+    pub spec: String,
+    /// The `ImportDirective` node, for later import rewriting.
+    pub node: NodeId,
+}
+
+/// Strip one layer of matching surrounding quotes from a quoted import's text.
+fn unquote(s: &str) -> String {
+    let t = s.trim();
+    let b = t.as_bytes();
+    if b.len() >= 2 && (b[0] == b'"' || b[0] == b'\'') && b[b.len() - 1] == b[0] {
+        t[1..t.len() - 1].to_string()
+    } else {
+        t.to_string()
+    }
 }
 
 /// Lower one file's tree, appending nodes to a shared arena; returns the file's modules.

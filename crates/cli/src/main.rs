@@ -22,10 +22,20 @@ struct Cli {
     /// Lower to IR and print the IR tree.
     #[arg(long)]
     ir: bool,
+
+    /// Resolve `#Import`s from this entry file (module-graph linker) instead of treating
+    /// the file as a single already-preprocessed script. Combine with `--ir` to print the
+    /// linked multi-group IR.
+    #[arg(long)]
+    link: bool,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    if cli.link {
+        return run_link(&cli);
+    }
 
     let source = std::fs::read_to_string(&cli.file)
         .with_context(|| format!("reading {}", cli.file.display()))?;
@@ -52,6 +62,36 @@ fn main() -> Result<()> {
     if cli.ir {
         let program = ahkbuild_ir::lower(&tree, &source);
         print!("{}", ahkbuild_ir::print_program(&program));
+    }
+
+    Ok(())
+}
+
+/// Drive the module-graph linker from an entry file.
+fn run_link(cli: &Cli) -> Result<()> {
+    let script_dir = cli
+        .file
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let builtins = ahkbuild_link::Builtins::detect(script_dir);
+    let search = ahkbuild_link::SearchPath::from_env(&builtins);
+
+    let out = ahkbuild_link::link_entry(&cli.file, &search)?;
+
+    eprintln!(
+        "linked {} ({} groups, {} warnings)",
+        cli.file.display(),
+        out.program.groups.len(),
+        out.warnings.len(),
+    );
+    for w in &out.warnings {
+        eprintln!("warning: {w}");
+    }
+
+    if cli.ir {
+        print!("{}", ahkbuild_ir::print_program(&out.program));
     }
 
     Ok(())

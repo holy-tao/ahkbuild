@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/syntax",
     "crates/ir",
+    "crates/link",
     "crates/cli",
 ]
 
@@ -22,3 +23,4 @@ clap = { version = "4", features = ["derive"] }
 # Internal
 ahkbuild-syntax = { path = "crates/syntax" }
 ahkbuild-ir = { path = "crates/ir" }
+ahkbuild-link = { path = "crates/link" }

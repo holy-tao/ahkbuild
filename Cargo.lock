@@ -7,6 +7,7 @@ name = "ahkbuild-cli"
 version = "0.1.0"
 dependencies = [
  "ahkbuild-ir",
+ "ahkbuild-link",
  "ahkbuild-syntax",
  "anyhow",
  "clap",
@@ -18,6 +19,16 @@ version = "0.1.0"
 dependencies = [
  "ahkbuild-syntax",
  "insta",
+]
+
+[[package]]
+name = "ahkbuild-link"
+version = "0.1.0"
+dependencies = [
+ "ahkbuild-ir",
+ "ahkbuild-syntax",
+ "anyhow",
+ "tempfile",
 ]
 
 [[package]]
