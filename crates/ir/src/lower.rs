@@ -17,37 +17,105 @@ use crate::arena::{Arena, NodeId};
 use crate::node::*;
 use crate::program::{Group, GroupId, Program};
 
-/// Lower a parsed tree into an owned [`Program`].
+/// Lower a single already-parsed file into an owned [`Program`] (one entry group).
 ///
-/// This builds the single entry group from one preprocessed source file (base 0). The
-/// linker will later add one group per imported file/resource; a non-entry file's spans
-/// must then be offset by its [`SourceMap::base`].
+/// Convenience over [`Lowering`] for the single-file path (CLI `--ir`, tests).
 pub fn lower(tree: &Tree, source: &str) -> Program {
-    let (sources, file) = SourceMap::single("<main>", source);
-    let mut l = Lowerer {
-        arena: Arena::new(),
-        source,
-        directives: HashMap::new(),
-    };
-    let (modules, main) = l.build_top_level(tree.root_node());
-    let _ = main;
-    let entry = Group {
-        id: GroupId(0),
-        file,
-        modules,
-    };
-    Program {
-        groups: vec![entry],
-        arena: l.arena,
-        sources,
-        directives: l.directives,
+    let mut lw = Lowering::new();
+    lw.add_parsed("<main>", source.to_string(), tree);
+    lw.finish()
+}
+
+/// Incremental, multi-file lowering into one shared [`Program`].
+///
+/// Each added file becomes its own [`Group`] (own module-name namespace) but shares the
+/// arena and [`SourceMap`]. Files are laid out consecutively in the source map's global
+/// position space, and each file's spans are offset by its base so a bare [`Span`] still
+/// identifies both a file and a range. This is the lowering substrate the linker drives.
+#[derive(Default)]
+pub struct Lowering {
+    arena: Arena,
+    sources: SourceMap,
+    directives: HashMap<NodeId, Vec<DirectiveComment>>,
+    groups: Vec<Group>,
+}
+
+impl Lowering {
+    pub fn new() -> Lowering {
+        Lowering::default()
+    }
+
+    /// Parse `text` and lower it as a new group. Returns `None` if the parser yields no
+    /// tree. The text is moved into the [`SourceMap`].
+    pub fn add_file(
+        &mut self,
+        name: impl Into<String>,
+        text: impl Into<String>,
+    ) -> Option<GroupId> {
+        let file = self.sources.add(name, text);
+        let base = self.sources.base(file);
+        let src: &str = &self.sources.file(file).text;
+        let tree = ahkbuild_syntax::parse(src)?;
+        let modules = lower_into(&mut self.arena, &mut self.directives, src, base, tree.root_node());
+        let id = GroupId(self.groups.len() as u32);
+        self.groups.push(Group { id, file, modules });
+        Some(id)
+    }
+
+    /// Lower a file whose `tree` is already parsed (from the same bytes as `text`). The
+    /// text is moved into the [`SourceMap`].
+    pub fn add_parsed(
+        &mut self,
+        name: impl Into<String>,
+        text: impl Into<String>,
+        tree: &Tree,
+    ) -> GroupId {
+        let file = self.sources.add(name, text);
+        let base = self.sources.base(file);
+        let src: &str = &self.sources.file(file).text;
+        let modules = lower_into(&mut self.arena, &mut self.directives, src, base, tree.root_node());
+        let id = GroupId(self.groups.len() as u32);
+        self.groups.push(Group { id, file, modules });
+        id
+    }
+
+    pub fn finish(self) -> Program {
+        Program {
+            groups: self.groups,
+            arena: self.arena,
+            sources: self.sources,
+            directives: self.directives,
+        }
     }
 }
 
+/// Lower one file's tree, appending nodes to a shared arena; returns the file's modules.
+/// A free function (not a `&mut self` method) so it can borrow the [`Lowering`] fields as
+/// disjoint pieces while `source` still borrows the source map.
+fn lower_into(
+    arena: &mut Arena,
+    directives: &mut HashMap<NodeId, Vec<DirectiveComment>>,
+    source: &str,
+    base: u32,
+    root: Node,
+) -> Vec<NodeId> {
+    let mut l = Lowerer {
+        arena,
+        directives,
+        source,
+        base,
+    };
+    let (modules, _main) = l.build_top_level(root);
+    modules
+}
+
 struct Lowerer<'a> {
-    arena: Arena,
+    arena: &'a mut Arena,
+    directives: &'a mut HashMap<NodeId, Vec<DirectiveComment>>,
+    /// This file's own text (file-relative). Combined with `base` to slice global spans.
     source: &'a str,
-    directives: HashMap<NodeId, Vec<DirectiveComment>>,
+    /// This file's start offset in the [`SourceMap`] global position space.
+    base: u32,
 }
 
 impl<'a> Lowerer<'a> {
@@ -60,7 +128,7 @@ impl<'a> Lowerer<'a> {
     /// reopens-or-creates its module and subsequent statements append to it.
     fn build_top_level(&mut self, root: Node) -> (Vec<NodeId>, NodeId) {
         // Implicit __Main, created up front and keyed "__Main".
-        let main_span = Span::of(root);
+        let main_span = self.span(root);
         let main = self.arena.alloc(
             main_span,
             NodeKind::Module(Module {
@@ -91,8 +159,9 @@ impl<'a> Lowerer<'a> {
                     current = if let Some(&existing) = by_name.get(&key) {
                         existing
                     } else {
+                        let child_span = self.span(child);
                         let id = self.arena.alloc(
-                            Span::of(child),
+                            child_span,
                             NodeKind::Module(Module {
                                 name,
                                 name_span: ident.map(|n| self.name_of(n)),
@@ -129,9 +198,9 @@ impl<'a> Lowerer<'a> {
         DirectiveComment {
             name: node
                 .child_by_field_name("directive")
-                .map(Span::of)
-                .unwrap_or_else(|| Span::of(node)),
-            arguments: node.child_by_field_name("arguments").map(Span::of),
+                .map(|n| self.span(n))
+                .unwrap_or_else(|| self.span(node)),
+            arguments: node.child_by_field_name("arguments").map(|n| self.span(n)),
         }
     }
 
@@ -145,7 +214,7 @@ impl<'a> Lowerer<'a> {
         for d in pending {
             eprintln!(
                 "warning: directive `;@{}` has no following statement",
-                d.name.text(self.source)
+                self.slice(d.name)
             );
         }
     }
@@ -751,9 +820,9 @@ impl<'a> Lowerer<'a> {
 
         let op = if is_assignment {
             self.named_child_of_kind(node, "assignment_operator")
-                .map(Span::of)
+                .map(|n| self.span(n))
         } else {
-            node.child_by_field_name("operator").map(Span::of)
+            node.child_by_field_name("operator").map(|n| self.span(n))
         };
 
         // Fall back to the gap between operands (covers implicit-concat whitespace).
@@ -772,8 +841,8 @@ impl<'a> Lowerer<'a> {
     fn build_unary(&mut self, node: Node, prefix: bool) -> NodeId {
         let op = node
             .child_by_field_name("operator")
-            .map(Span::of)
-            .unwrap_or_else(|| Span::of(node));
+            .map(|n| self.span(n))
+            .unwrap_or_else(|| self.span(node));
         let operand = node
             .child_by_field_name("operand")
             .map(|n| self.build_node(n))
@@ -1197,14 +1266,14 @@ impl<'a> Lowerer<'a> {
     }
 
     fn build_hotkey(&mut self, node: Node) -> NodeId {
-        let trigger = node.child_by_field_name("trigger").map(Span::of);
+        let trigger = node.child_by_field_name("trigger").map(|n| self.span(n));
         let body = node.child_by_field_name("body").map(|b| self.build_node(b));
         self.alloc(node, NodeKind::Hotkey { trigger, body })
     }
 
     fn build_hotstring(&mut self, node: Node) -> NodeId {
-        let trigger = node.child_by_field_name("trigger").map(Span::of);
-        let modifiers = node.child_by_field_name("modifiers").map(Span::of);
+        let trigger = node.child_by_field_name("trigger").map(|n| self.span(n));
+        let modifiers = node.child_by_field_name("modifiers").map(|n| self.span(n));
         let replacement = node.child_by_field_name("body").map(|b| self.build_node(b));
         self.alloc(
             node,
@@ -1249,14 +1318,29 @@ impl<'a> Lowerer<'a> {
     // -----------------------------------------------------------------
 
     fn alloc(&mut self, node: Node, kind: NodeKind) -> NodeId {
-        self.arena.alloc(Span::of(node), kind)
+        let span = self.span(node);
+        self.arena.alloc(span, kind)
+    }
+
+    /// This file's [`Span`] for a tree-sitter node, in the source map's global position
+    /// space (tree-sitter byte offsets are file-relative, so add this file's `base`).
+    fn span(&self, node: Node) -> Span {
+        Span {
+            start: node.start_byte() as u32 + self.base,
+            end: node.end_byte() as u32 + self.base,
+        }
+    }
+
+    /// Slice this file's own text for one of its (global) spans.
+    fn slice(&self, span: Span) -> &str {
+        &self.source[(span.start - self.base) as usize..(span.end - self.base) as usize]
     }
 
     /// This grammar bakes leading whitespace into many tokens (e.g. an `identifier` may be
     /// `"    Origin"`, an `assignment_operator` `" :="`). A node's own span keeps that
     /// whitespace for faithful emission, but extracted *names* are identity, so trim them.
     fn trim_span(&self, span: Span) -> Span {
-        let text = span.text(self.source);
+        let text = self.slice(span);
         let lead = (text.len() - text.trim_start().len()) as u32;
         let trail = (text.len() - text.trim_end().len()) as u32;
         Span {
@@ -1267,7 +1351,7 @@ impl<'a> Lowerer<'a> {
 
     /// The trimmed span of `node`, for use as a name.
     fn name_of(&self, node: Node) -> Span {
-        self.trim_span(Span::of(node))
+        self.trim_span(self.span(node))
     }
 
     /// The trimmed span of a named field child, for use as a name.

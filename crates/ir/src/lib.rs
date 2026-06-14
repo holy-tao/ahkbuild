@@ -14,7 +14,7 @@ pub mod program;
 pub use ahkbuild_syntax::{FileId, SourceFile, SourceMap, Span};
 
 pub use arena::{Arena, Node, NodeId};
-pub use lower::lower;
+pub use lower::{lower, Lowering};
 pub use node::NodeKind;
 pub use print::print_program;
 pub use program::{Group, GroupId, Program};
@@ -148,6 +148,42 @@ mod tests {
             panic!();
         };
         assert!(name.initializer.is_none());
+    }
+
+    #[test]
+    fn multi_file_groups_are_isolated_with_correct_spans() {
+        // Two files each define `#Module Helper` with a distinct body. They must land in
+        // separate groups, and each group's spans must slice *its own* file's text — the
+        // base-offset check for the shared SourceMap. (IR-level mirror of probe P-B.)
+        let mut lw = Lowering::new();
+        let a = lw.add_file("GroupA.ahk", "#Module Helper\nValA := 1\n");
+        let b = lw.add_file("GroupB.ahk", "#Module Helper\nValB := 2\n");
+        assert_eq!(a, Some(GroupId(0)));
+        assert_eq!(b, Some(GroupId(1)));
+        let p = lw.finish();
+
+        assert_eq!(p.groups.len(), 2);
+        // Each group has __Main + Helper.
+        for g in &p.groups {
+            assert_eq!(g.modules.len(), 2);
+        }
+
+        // The second group's nodes live at a non-zero base; slicing must still resolve to
+        // GroupB's text, not GroupA's.
+        let helper_b = p.groups[1].modules[1];
+        let NodeKind::Module(m) = &p.arena[helper_b].kind else {
+            panic!("expected module");
+        };
+        assert_eq!(m.name, "Helper");
+        let body = m.body[0];
+        assert!(
+            p.text(body).contains("ValB"),
+            "group B body should slice from B's text, got {:?}",
+            p.text(body)
+        );
+        // And the file origin is recorded.
+        assert_eq!(p.groups[1].file, p.sources.file(p.groups[1].file).id);
+        assert_eq!(p.sources.file(p.groups[1].file).name, "GroupB.ahk");
     }
 
     #[test]
