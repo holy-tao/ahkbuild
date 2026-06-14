@@ -1,10 +1,14 @@
 //! `ahkbuild` CLI. Parses an AHK file and, with `--ir`, lowers it to the IR and prints
 //! the IR tree — used to eyeball lowering against real v2.1 module sources.
 
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
-use clap::Parser;
+#[cfg(debug_assertions)]
+use anyhow::Context;
+
+use anyhow::Result;
+use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
 #[command(
@@ -12,70 +16,100 @@ use clap::Parser;
     about = "AutoHotkey v2.1 module-aware bundler (WIP)"
 )]
 struct Cli {
-    /// AHK source file to parse.
-    file: PathBuf,
+    #[arg(short, long, action = clap::ArgAction::Count)]
+    debug: u8,
 
-    /// Print the full s-expression parse tree.
-    #[arg(long)]
-    sexp: bool,
+    #[command(subcommand)]
+    command: Commands,
+}
 
-    /// Lower to IR and print the IR tree.
-    #[arg(long)]
-    ir: bool,
+#[derive(ValueEnum, Debug, Clone)]
+enum BundleTarget {
+    Ahk,
+    Exe,
+}
 
-    /// Resolve `#Import`s from this entry file (module-graph linker) instead of treating
-    /// the file as a single already-preprocessed script. Combine with `--ir` to print the
-    /// linked multi-group IR.
-    #[arg(long)]
-    link: bool,
+#[derive(Subcommand)]
+enum Commands {
+    /// Bundle a script into a single script or a .exe file
+    Bundle {
+        /// The output format to bundle to
+        format: BundleTarget,
 
-    /// Link the entry file and emit a single self-contained `.ahk` bundle to stdout.
-    /// Implies `--link`.
-    #[arg(long)]
-    bundle: bool,
+        /// The file to bundle.
+        input: PathBuf,
+
+        /// The output file - leave blank to print to stdout.
+        output: Option<PathBuf>,
+
+        /// Lower to IR and print the IR tree.
+        #[cfg(debug_assertions)]
+        #[arg(long)]
+        ir: bool,
+
+        /// Parse the main file and print the sexp
+        #[cfg(debug_assertions)]
+        #[arg(long)]
+        sexp: bool,
+    },
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    if cli.link || cli.bundle {
-        return run_link(&cli);
+    let result = match &cli.command {
+        Commands::Bundle {
+            format,
+            input,
+            output,
+            #[cfg(debug_assertions)]
+            ir,
+            #[cfg(debug_assertions)]
+            sexp,
+        } => {
+            // If we've got one of the diagnostic flags, do that and exit
+            #[cfg(debug_assertions)]
+            if *ir || *sexp {
+                let source = std::fs::read_to_string(input)
+                    .with_context(|| format!("reading {}", input.display()))?;
+
+                let tree = ahkbuild_syntax::parse(&source).context("parser returned no tree")?;
+                let root = tree.root_node();
+
+                if *ir {
+                    let program = ahkbuild_ir::lower(&tree, &source);
+                    print!("{}", ahkbuild_ir::print_program(&program));
+                }
+
+                if *sexp {
+                    print!("{}", &root.to_sexp());
+                }
+
+                return Ok(());
+            }
+
+            // Otherwise run the appropriate bundler
+            match format {
+                BundleTarget::Exe => {
+                    todo!("EXE bundling is not yet supported");
+                }
+                BundleTarget::Ahk => bundle_ahk(input, output),
+            }
+        }
+    };
+
+    match result {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            eprint!("{}", err);
+            Err(err)
+        }
     }
-
-    let source = std::fs::read_to_string(&cli.file)
-        .with_context(|| format!("reading {}", cli.file.display()))?;
-
-    let tree = ahkbuild_syntax::parse(&source).context("parser returned no tree")?;
-    let root = tree.root_node();
-
-    if cli.sexp {
-        println!("{}", root.to_sexp());
-    }
-
-    eprintln!(
-        "parsed {} ({} bytes, {} top-level nodes), has_error={}",
-        cli.file.display(),
-        source.len(),
-        root.named_child_count(),
-        root.has_error(),
-    );
-
-    if root.has_error() {
-        bail!("parse tree contains ERROR/MISSING nodes");
-    }
-
-    if cli.ir {
-        let program = ahkbuild_ir::lower(&tree, &source);
-        print!("{}", ahkbuild_ir::print_program(&program));
-    }
-
-    Ok(())
 }
 
-/// Drive the module-graph linker from an entry file.
-fn run_link(cli: &Cli) -> Result<()> {
-    let script_dir = cli
-        .file
+/// Bundle into a single .ahk file
+fn bundle_ahk(input: &Path, output: &Option<PathBuf>) -> Result<()> {
+    let script_dir = input
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .map(PathBuf::from)
@@ -83,25 +117,30 @@ fn run_link(cli: &Cli) -> Result<()> {
     let builtins = ahkbuild_link::Builtins::detect(script_dir);
     let search = ahkbuild_link::SearchPath::from_env(&builtins);
 
-    let out = ahkbuild_link::link_entry(&cli.file, &search)?;
+    // Link modules
+    let out = ahkbuild_link::link_entry(input, &search)?;
 
     eprintln!(
         "linked {} ({} groups, {} warnings)",
-        cli.file.display(),
+        input.display(),
         out.program.groups.len(),
         out.warnings.len(),
     );
+
     for w in &out.warnings {
         eprintln!("warning: {w}");
     }
 
-    if cli.bundle {
-        print!("{}", ahkbuild_link::emit_ahk(&out.program, &out.plan));
-    }
+    let bundled = ahkbuild_link::emit_ahk(&out.program, &out.plan);
 
-    if cli.ir {
-        print!("{}", ahkbuild_ir::print_program(&out.program));
+    match output {
+        Some(path) => {
+            fs::write(path, bundled)?;
+            Ok(())
+        }
+        None => {
+            print!("{}", bundled);
+            Ok(())
+        }
     }
-
-    Ok(())
 }
