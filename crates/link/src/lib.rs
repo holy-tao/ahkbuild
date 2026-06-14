@@ -5,8 +5,10 @@
 //! [`Program`]. This is the IO-bearing layer above the (pure) `ir` crate; later passes
 //! (import rewriting, the `.ahk` / `.exe` emitters) consume the [`Program`] it produces.
 
+mod bundle;
 mod search;
 
+pub use bundle::{emit_ahk, BundlePlan, BundleUnit};
 pub use search::{Builtins, SearchPath};
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -15,10 +17,11 @@ use std::path::{Path, PathBuf};
 use ahkbuild_ir::{GroupId, Lowering, NodeKind, Program};
 use anyhow::{anyhow, Context, Result};
 
-/// The result of linking: the assembled program plus non-fatal diagnostics (unresolved
-/// imports, deferred forms, same-name groups).
+/// The result of linking: the assembled program, a backend-neutral [`BundlePlan`], and
+/// non-fatal diagnostics (unresolved imports, deferred forms, same-name groups).
 pub struct LinkOutput {
     pub program: Program,
+    pub plan: BundlePlan,
     pub warnings: Vec<String>,
 }
 
@@ -31,12 +34,16 @@ pub fn link_entry(entry: &Path, search: &SearchPath) -> Result<LinkOutput> {
     let mut lowering = Lowering::new();
     let mut loaded: HashMap<PathBuf, GroupId> = HashMap::new();
     let mut warnings = Vec::new();
-    let mut queue: VecDeque<PathBuf> = VecDeque::new();
+    // Module name each group is imported as, indexed by group order (entry = None). Used to
+    // build the bundle plan.
+    let mut group_names: Vec<Option<String>> = Vec::new();
+    // Each queued file carries the name it was imported as (the entry has none).
+    let mut queue: VecDeque<(PathBuf, Option<String>)> = VecDeque::new();
 
     let entry = canonical(entry).with_context(|| format!("entry script {}", entry.display()))?;
-    queue.push_back(entry);
+    queue.push_back((entry, None));
 
-    while let Some(path) = queue.pop_front() {
+    while let Some((path, import_name)) = queue.pop_front() {
         if loaded.contains_key(&path) {
             continue;
         }
@@ -46,6 +53,7 @@ pub fn link_entry(entry: &Path, search: &SearchPath) -> Result<LinkOutput> {
             .add_file(path.to_string_lossy().into_owned(), text)
             .ok_or_else(|| anyhow!("parser returned no tree for {}", path.display()))?;
         loaded.insert(path.clone(), gid);
+        group_names.push(import_name);
 
         // Names defined in this group (plus the built-in `AHK` module): an `#Import` of one
         // of these refers to an in-group module, not a file, so it is never resolved.
@@ -77,7 +85,9 @@ pub fn link_entry(entry: &Path, search: &SearchPath) -> Result<LinkOutput> {
             }
             match search.resolve(&imp.spec, importer_dir) {
                 Some(target) => match canonical(&target) {
-                    Ok(c) if !loaded.contains_key(&c) => queue.push_back(c),
+                    Ok(c) if !loaded.contains_key(&c) => {
+                        queue.push_back((c, Some(imp.spec.clone())))
+                    }
                     Ok(_) => {}
                     Err(e) => warnings.push(format!("{}: {e:#}", target.display())),
                 },
@@ -92,7 +102,22 @@ pub fn link_entry(entry: &Path, search: &SearchPath) -> Result<LinkOutput> {
 
     let program = lowering.finish();
     warnings.extend(same_name_group_warnings(&program));
-    Ok(LinkOutput { program, warnings })
+
+    let units = program
+        .groups
+        .iter()
+        .enumerate()
+        .map(|(i, g)| BundleUnit {
+            group: g.id,
+            module_name: group_names[i].clone(),
+        })
+        .collect();
+
+    Ok(LinkOutput {
+        program,
+        plan: BundlePlan { units },
+        warnings,
+    })
 }
 
 fn canonical(p: &Path) -> Result<PathBuf> {

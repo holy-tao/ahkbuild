@@ -28,12 +28,17 @@ struct Cli {
     /// linked multi-group IR.
     #[arg(long)]
     link: bool,
+
+    /// Link the entry file and emit a single self-contained `.ahk` bundle to stdout.
+    /// Implies `--link`.
+    #[arg(long)]
+    bundle: bool,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    if cli.link {
+    if cli.link || cli.bundle {
         return run_link(&cli);
     }
 
@@ -88,6 +93,10 @@ fn run_link(cli: &Cli) -> Result<()> {
     );
     for w in &out.warnings {
         eprintln!("warning: {w}");
+    }
+
+    if cli.bundle {
+        print!("{}", ahkbuild_link::emit_ahk(&out.program, &out.plan));
     }
 
     if cli.ir {
