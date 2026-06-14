@@ -56,7 +56,13 @@ impl Lowering {
         let base = self.sources.base(file);
         let src: &str = &self.sources.file(file).text;
         let tree = ahkbuild_syntax::parse(src)?;
-        let modules = lower_into(&mut self.arena, &mut self.directives, src, base, tree.root_node());
+        let modules = lower_into(
+            &mut self.arena,
+            &mut self.directives,
+            src,
+            base,
+            tree.root_node(),
+        );
         let id = GroupId(self.groups.len() as u32);
         self.groups.push(Group { id, file, modules });
         Some(id)
@@ -73,7 +79,13 @@ impl Lowering {
         let file = self.sources.add(name, text);
         let base = self.sources.base(file);
         let src: &str = &self.sources.file(file).text;
-        let modules = lower_into(&mut self.arena, &mut self.directives, src, base, tree.root_node());
+        let modules = lower_into(
+            &mut self.arena,
+            &mut self.directives,
+            src,
+            base,
+            tree.root_node(),
+        );
         let id = GroupId(self.groups.len() as u32);
         self.groups.push(Group { id, file, modules });
         id

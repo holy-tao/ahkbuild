@@ -66,7 +66,8 @@ impl Printer<'_> {
             }
         };
         let name_of = |s: &Option<Span>| -> String {
-            s.map(|sp| prog.span_text(sp).to_string()).unwrap_or_default()
+            s.map(|sp| prog.span_text(sp).to_string())
+                .unwrap_or_default()
         };
 
         match &node.kind {
@@ -202,9 +203,11 @@ impl Printer<'_> {
                 }
                 for n in names {
                     match &n.alias {
-                        Some(a) => {
-                            parts.push(format!("{} as {}", prog.span_text(n.name), prog.span_text(*a)))
-                        }
+                        Some(a) => parts.push(format!(
+                            "{} as {}",
+                            prog.span_text(n.name),
+                            prog.span_text(*a)
+                        )),
                         None => parts.push(prog.span_text(n.name).to_string()),
                     }
                 }

@@ -124,7 +124,10 @@ impl SourceMap {
 
     /// The file whose byte range contains global position `pos`.
     pub fn file_at(&self, pos: u32) -> &SourceFile {
-        let idx = self.files.partition_point(|f| f.base <= pos).saturating_sub(1);
+        let idx = self
+            .files
+            .partition_point(|f| f.base <= pos)
+            .saturating_sub(1);
         &self.files[idx]
     }
 
