@@ -23,7 +23,7 @@ fn bundle_wraps_imports_in_module_blocks() {
     write(tmp.path(), "Greeter.ahk", "export Hello() {\n    x := 1\n}\n");
 
     let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
-    let ahk = ahkbuild_emit::emit_ahk(&out.program, &out.plan);
+    let ahk = ahkbuild_emit::emit_ahk(&out.program, &out.plan, None);
 
     // Entry content is preserved verbatim; the import is wrapped in a #Module block so the
     // entry's `#Import Greeter` re-targets to it. The bare name already matches the assigned
@@ -45,7 +45,7 @@ fn path_import_is_rewritten_to_in_file_module_name() {
     write(tmp.path(), "lib/Greeter.ahk", "export Hello() {\n    return 1\n}\n");
 
     let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
-    let ahk = ahkbuild_emit::emit_ahk(&out.program, &out.plan);
+    let ahk = ahkbuild_emit::emit_ahk(&out.program, &out.plan, None);
 
     // The path spec is gone; the import now names the in-file module, alias preserved.
     assert!(!ahk.contains("lib/Greeter"), "path should be rewritten: {ahk}");
@@ -61,7 +61,7 @@ fn assigned_module_name_is_sanitized_to_a_valid_identifier() {
     write(tmp.path(), "3d-utils.ahk", "export Val() {\n    return 1\n}\n");
 
     let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
-    let ahk = ahkbuild_emit::emit_ahk(&out.program, &out.plan);
+    let ahk = ahkbuild_emit::emit_ahk(&out.program, &out.plan, None);
 
     assert!(ahk.contains("\n#Module M3d_utils\n"), "{ahk}");
     assert!(ahk.contains("#Import M3d_utils as U"), "{ahk}");
@@ -81,7 +81,7 @@ fn same_stem_in_different_dirs_gets_unique_names() {
     write(tmp.path(), "b/Util.ahk", "export V() {\n    return 2\n}\n");
 
     let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
-    let ahk = ahkbuild_emit::emit_ahk(&out.program, &out.plan);
+    let ahk = ahkbuild_emit::emit_ahk(&out.program, &out.plan, None);
 
     assert!(ahk.contains("\n#Module Util\n"), "{ahk}");
     assert!(ahk.contains("\n#Module Util_2\n"), "{ahk}");

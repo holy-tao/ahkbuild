@@ -816,9 +816,7 @@ impl<'a> Lowerer<'a> {
             _ => VarScope::Local,
         };
         let name = self.field_name(node, "name");
-        let initializer = node
-            .child_by_field_name("value")
-            .map(|v| self.build_node(v));
+        let initializer = self.build_field_expr(node, "value");
         self.alloc(
             node,
             NodeKind::VarDecl(VarDecl {
@@ -865,9 +863,16 @@ impl<'a> Lowerer<'a> {
             ImportBinding::Whole
         };
 
+        // `#Import export X` — the grammar exposes the re-export modifier as an `export` child.
+        let reexport = self.has_named_child(node, "export");
+
         self.alloc(
             node,
-            NodeKind::ImportDirective(ImportDirective { source, binding }),
+            NodeKind::ImportDirective(ImportDirective {
+                source,
+                binding,
+                reexport,
+            }),
         )
     }
 
@@ -900,10 +905,8 @@ impl<'a> Lowerer<'a> {
     // -----------------------------------------------------------------
 
     fn build_binary(&mut self, node: Node, is_assignment: bool) -> NodeId {
-        let left = node.child_by_field_name("left").map(|n| self.build_node(n));
-        let right = node
-            .child_by_field_name("right")
-            .map(|n| self.build_node(n));
+        let left = self.build_field_expr(node, "left");
+        let right = self.build_field_expr(node, "right");
 
         let op = if is_assignment {
             self.named_child_of_kind(node, "assignment_operator")
@@ -930,9 +933,8 @@ impl<'a> Lowerer<'a> {
             .child_by_field_name("operator")
             .map(|n| self.span(n))
             .unwrap_or_else(|| self.span(node));
-        let operand = node
-            .child_by_field_name("operand")
-            .map(|n| self.build_node(n))
+        let operand = self
+            .build_field_expr(node, "operand")
             .unwrap_or_else(|| self.alloc(node, NodeKind::Opaque));
         self.alloc(
             node,
@@ -959,9 +961,8 @@ impl<'a> Lowerer<'a> {
     }
 
     fn build_call(&mut self, node: Node, is_command_style: bool) -> NodeId {
-        let callee = node
-            .child_by_field_name("function")
-            .map(|n| self.build_node(n))
+        let callee = self
+            .build_field_expr(node, "function")
             .unwrap_or_else(|| self.alloc(node, NodeKind::Opaque));
         let is_dynamic = matches!(self.arena[callee].kind, NodeKind::DerefExpr { .. });
 
@@ -1035,9 +1036,7 @@ impl<'a> Lowerer<'a> {
                 "object_literal_member" => {
                     if let Some(key) = child.child_by_field_name("key") {
                         let key = self.build_node(key);
-                        let value = child
-                            .child_by_field_name("value")
-                            .map(|v| self.build_node(v));
+                        let value = self.build_field_expr(child, "value");
                         out.push(ObjectMember { key, value });
                     }
                 }
@@ -1177,7 +1176,7 @@ impl<'a> Lowerer<'a> {
         let body = node.child_by_field_name("body").map(|b| self.build_node(b));
         let until = node
             .child_by_field_name("until_block")
-            .and_then(|u| u.child_by_field_name("condition"))
+            .and_then(|u| self.field_node(u, "condition"))
             .map(|c| self.build_node(c));
         self.alloc(
             node,
@@ -1191,7 +1190,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn build_switch(&mut self, node: Node) -> NodeId {
-        let discriminant = node.child_by_field_name("head").map(|h| self.build_node(h));
+        let discriminant = self.build_field_expr(node, "head");
         let mut cases = Vec::new();
         if let Some(body) = node.child_by_field_name("body") {
             let mut cursor = body.walk();
@@ -1297,9 +1296,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn build_return(&mut self, node: Node) -> NodeId {
-        let value = node
-            .child_by_field_name("value")
-            .map(|v| self.build_node(v));
+        let value = self.build_field_expr(node, "value");
         self.alloc(node, NodeKind::ReturnStmt { value })
     }
 
@@ -1314,9 +1311,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn build_throw(&mut self, node: Node) -> NodeId {
-        let value = node
-            .child_by_field_name("thrown")
-            .map(|v| self.build_node(v));
+        let value = self.build_field_expr(node, "thrown");
         self.alloc(node, NodeKind::ThrowStmt { value })
     }
 
@@ -1373,9 +1368,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn build_hotif(&mut self, node: Node) -> NodeId {
-        let expression = node
-            .child_by_field_name("expression")
-            .map(|e| self.build_node(e));
+        let expression = self.build_field_expr(node, "expression");
         self.alloc(
             node,
             NodeKind::Directive {
@@ -1446,8 +1439,34 @@ impl<'a> Lowerer<'a> {
         node.child_by_field_name(field).map(|n| self.name_of(n))
     }
 
+    /// The *named* node for a field. The grammar's `_parenthesized_expression` is hidden
+    /// (`seq("(", expression_sequence, ")")`), so for a parenthesized field value
+    /// `child_by_field_name` can return the anonymous `(` token — which would lower to
+    /// `Opaque` and hide every reference inside the parens. Picking the first named child
+    /// carrying the field surfaces the real `expression_sequence` instead.
+    fn field_node<'t>(&self, node: Node<'t>, field: &str) -> Option<Node<'t>> {
+        let mut cursor = node.walk();
+        if cursor.goto_first_child() {
+            loop {
+                let c = cursor.node();
+                if cursor.field_name() == Some(field) && c.is_named() {
+                    return Some(c);
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+        node.child_by_field_name(field)
+    }
+
+    /// Build the expression at `field`, unwrapping a parenthesized value (see [`field_node`]).
+    fn build_field_expr(&mut self, node: Node, field: &str) -> Option<NodeId> {
+        self.field_node(node, field).map(|c| self.build_node(c))
+    }
+
     fn build_field_or_opaque(&mut self, node: Node, field: &str) -> NodeId {
-        match node.child_by_field_name(field) {
+        match self.field_node(node, field) {
             Some(c) => self.build_node(c),
             None => self.alloc(node, NodeKind::Opaque),
         }

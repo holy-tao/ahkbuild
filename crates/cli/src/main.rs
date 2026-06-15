@@ -42,6 +42,10 @@ enum Commands {
         /// The output file - leave blank to print to stdout.
         output: Option<PathBuf>,
 
+        /// Disable tree-shaking (dead-code elimination); emit a byte-faithful bundle.
+        #[arg(long)]
+        no_tree_shake: bool,
+
         /// Lower to IR and print the IR tree.
         #[cfg(debug_assertions)]
         #[arg(long)]
@@ -62,6 +66,7 @@ fn main() -> Result<()> {
             format,
             input,
             output,
+            no_tree_shake,
             #[cfg(debug_assertions)]
             ir,
             #[cfg(debug_assertions)]
@@ -93,7 +98,7 @@ fn main() -> Result<()> {
                 BundleTarget::Exe => {
                     todo!("EXE bundling is not yet supported");
                 }
-                BundleTarget::Ahk => bundle_ahk(input, output),
+                BundleTarget::Ahk => bundle_ahk(input, output, !no_tree_shake),
             }
         }
     };
@@ -108,7 +113,7 @@ fn main() -> Result<()> {
 }
 
 /// Bundle into a single .ahk file
-fn bundle_ahk(input: &Path, output: &Option<PathBuf>) -> Result<()> {
+fn bundle_ahk(input: &Path, output: &Option<PathBuf>, tree_shake: bool) -> Result<()> {
     let script_dir = input
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -131,7 +136,18 @@ fn bundle_ahk(input: &Path, output: &Option<PathBuf>) -> Result<()> {
         eprintln!("warning: {w}");
     }
 
-    let bundled = ahkbuild_emit::emit_ahk(&out.program, &out.plan);
+    // Tree-shake by default (dead-code elimination); `--no-tree-shake` opts out.
+    let shaken = tree_shake.then(|| ahkbuild_shake::shake(&out.program, &out.plan));
+    if let Some(s) = &shaken {
+        eprintln!(
+            "tree-shaking: {} dead node(s), {} dropped import(s), {} dead module(s)",
+            s.dead.len(),
+            s.dropped_imports.len(),
+            s.dead_modules.len(),
+        );
+    }
+
+    let bundled = ahkbuild_emit::emit_ahk(&out.program, &out.plan, shaken.as_ref());
 
     match output {
         Some(path) => {

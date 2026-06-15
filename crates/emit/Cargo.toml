@@ -10,6 +10,7 @@ publish = false
 ahkbuild-syntax.workspace = true
 ahkbuild-ir.workspace = true
 ahkbuild-link.workspace = true
+ahkbuild-shake.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

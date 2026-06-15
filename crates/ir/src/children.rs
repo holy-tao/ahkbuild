@@ -237,6 +237,28 @@ cb := (x, y := 2) => x + y
     }
 
     #[test]
+    fn parenthesized_expression_surfaces_inner_reference() {
+        // The grammar's `_parenthesized_expression` is hidden, so naively reading a field
+        // could yield the `(` token and lower to Opaque, hiding references inside. Both a
+        // parenthesized operand of `!` and a parenthesized binary operand must expose their
+        // inner identifiers as real nodes (else reachability under-marks and drops live code).
+        let p = program("r := !(x is Query)\n");
+        // Collect identifier texts reachable by walking children from the module root.
+        let mut seen = Vec::new();
+        let mut stack = vec![p.groups[0].modules[0]];
+        while let Some(n) = stack.pop() {
+            if matches!(p.arena[n].kind, NodeKind::Identifier) {
+                seen.push(p.text(n).trim().to_string());
+            }
+            stack.extend(children(&p.arena[n].kind));
+        }
+        assert!(
+            seen.iter().any(|s| s == "Query"),
+            "the parenthesized `Query` reference must be reachable, saw: {seen:?}"
+        );
+    }
+
+    #[test]
     fn call_children_are_callee_then_args() {
         let p = program("Foo(a, b)\n");
         // The top-level call lowers straight to a CallExpr (no ExpressionStatement wrapper).

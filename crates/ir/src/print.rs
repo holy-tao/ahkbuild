@@ -214,7 +214,8 @@ impl Printer<'_> {
                 format!(" {{{}}}", parts.join(", "))
             }
         };
-        format!("{source}{binding}")
+        let reexport = if d.reexport { "export " } else { "" };
+        format!("{reexport}{source}{binding}")
     }
 
     /// Recurse into every child node. Exhaustive `match` — no catch-all.

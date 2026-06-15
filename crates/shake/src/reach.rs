@@ -39,6 +39,14 @@ pub fn mark(program: &Program, resolved: &Resolved) -> Reachability {
             m.used_imports.insert(import_node);
             m.enqueue_all_decls(target);
         }
+        // Re-exports (`#Import export ...`) are public surface: keep the re-exported target
+        // declarations live unconditionally (a consumer may reach them through this module).
+        for (target, origin) in &imports.reexports {
+            match origin {
+                Origin::Namespace => m.enqueue_all_decls(*target),
+                Origin::Name(name) => m.enqueue_named_decl(*target, name),
+            }
+        }
     }
 
     m.run();
@@ -179,6 +187,16 @@ impl Marker<'_> {
         if let Some(tbl) = self.resolved.decls.get(&m) {
             for &d in &tbl.all {
                 self.worklist.push((d, m));
+            }
+        }
+    }
+
+    fn enqueue_named_decl(&mut self, m: ModuleRef, name: &str) {
+        if let Some(tbl) = self.resolved.decls.get(&m) {
+            if let Some(nodes) = tbl.by_name.get(name) {
+                for &d in nodes {
+                    self.worklist.push((d, m));
+                }
             }
         }
     }

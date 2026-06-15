@@ -134,6 +134,60 @@ fn selective_import_drops_the_unreferenced_export() {
 }
 
 #[test]
+fn reexport_chain_is_kept_not_trimmed() {
+    // A imports a barrel B (`#Import export ...`) that re-exports from C, which itself
+    // re-exports a sibling's named export. Even though nothing in B or C *references* those
+    // names locally, the re-exports are public surface and must survive — both the re-export
+    // import directives (never dropped) and the re-exported target declarations (kept live).
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(tmp.path(), "main.ahk", "#Import Barrel as Lib\nLib.Thing()\n");
+    write(tmp.path(), "Barrel.ahk", "#Import export Core {*}\n");
+    write(tmp.path(), "Core.ahk", "#Import export Thing\n");
+    write(
+        tmp.path(),
+        "Thing.ahk",
+        "export Thing() {\n    return Helper()\n}\nHelper() {\n}\n",
+    );
+
+    let (p, r) = run(&main);
+
+    // The re-exported `Thing` (and its transitive `Helper`) survive.
+    assert!(dead_names(&p, &r).is_empty(), "dead: {:?}", dead_names(&p, &r));
+    // The re-export directives are never dropped (the chain must hold at runtime).
+    assert!(
+        r.dropped_imports.is_empty(),
+        "re-exports must not be dropped: {:?}",
+        r.dropped_imports
+    );
+    // No module is removed — every link in the barrel chain is needed.
+    assert!(r.dead_modules.is_empty(), "dead modules: {:?}", r.dead_modules);
+}
+
+#[test]
+fn reference_inside_parentheses_keeps_its_import() {
+    // A reference that only appears inside parentheses (here a `!(x is Query)` type check)
+    // must still mark its import used. Parenthesized expressions previously lowered to Opaque
+    // and hid the reference, wrongly dropping `#Import Query`.
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(tmp.path(), "main.ahk", "#Import QC {Check}\nCheck(0)\n");
+    write(
+        tmp.path(),
+        "QC.ahk",
+        "#Import Query\nexport Check(o) {\n    if (!(o is Query))\n        return 0\n    return 1\n}\n",
+    );
+    write(tmp.path(), "Query.ahk", "export default class Query {\n}\n");
+
+    let (p, r) = run(&main);
+    assert!(
+        r.dropped_imports.is_empty(),
+        "`#Import Query` is used inside parens and must be kept: {:?}",
+        r.dropped_imports
+    );
+    assert!(r.dead_modules.is_empty(), "Query module must survive");
+    assert!(dead_names(&p, &r).is_empty(), "dead: {:?}", dead_names(&p, &r));
+}
+
+#[test]
 fn unreferenced_import_is_dropped_and_its_module_removed() {
     let tmp = tempfile::tempdir().unwrap();
     let main = write(tmp.path(), "main.ahk", "#Import Lib\nx := 1\n");

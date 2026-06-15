@@ -199,6 +199,9 @@ impl Module {
 pub struct ImportDirective {
     pub source: ImportSource,
     pub binding: ImportBinding,
+    /// `#Import export X` — a re-export (barrel): the imported names also become exports of
+    /// the importing module, so they are part of its public surface and must not be trimmed.
+    pub reexport: bool,
 }
 
 /// What an `#Import` resolves against: a bare module name or a quoted path/spec.

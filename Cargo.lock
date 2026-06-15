@@ -9,6 +9,7 @@ dependencies = [
  "ahkbuild-emit",
  "ahkbuild-ir",
  "ahkbuild-link",
+ "ahkbuild-shake",
  "ahkbuild-syntax",
  "anyhow",
  "clap",
@@ -20,6 +21,7 @@ version = "0.1.0"
 dependencies = [
  "ahkbuild-ir",
  "ahkbuild-link",
+ "ahkbuild-shake",
  "ahkbuild-syntax",
  "tempfile",
 ]

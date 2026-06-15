@@ -62,12 +62,17 @@ pub struct ImportTable {
     /// Lowercased bound local name -> target. Referencing the name marks the import "used".
     pub by_name: HashMap<String, ImportTarget>,
     /// Resolved file-import directive nodes that bind at least one name — candidates to drop
-    /// if none of their names are referenced. (Wildcard, quoted side-effect, and
+    /// if none of their names are referenced. (Wildcard, re-export, quoted side-effect, and
     /// in-group/builtin imports are never listed; they are always kept.)
     pub droppable: Vec<NodeId>,
     /// `(import node, target)` for wildcard `{*}` imports: their target's decls are kept
     /// wholesale (we can't cheaply tell which unqualified names came from the wildcard).
     pub wildcards: Vec<(NodeId, ModuleRef)>,
+    /// `#Import export ...` re-exports: the bound names are part of *this* module's public
+    /// surface, so the import is never dropped and the re-exported target declarations are
+    /// kept live (a consumer of this module may reference them through it — resolving that
+    /// transitively is v2 work). `Origin::Namespace` re-exports the whole target.
+    pub reexports: Vec<(ModuleRef, Origin)>,
 }
 
 /// The whole resolution result for a program.
@@ -251,6 +256,7 @@ fn collect_import(
         return;
     };
 
+    let reexport = d.reexport;
     let mut binds_name = false;
     match &d.binding {
         ImportBinding::Whole => {
@@ -267,6 +273,9 @@ fn collect_import(
                 );
                 binds_name = true;
             }
+            if reexport {
+                imports.reexports.push((target, Origin::Namespace));
+            }
         }
         ImportBinding::Alias(a) => {
             imports.by_name.insert(
@@ -278,11 +287,17 @@ fn collect_import(
                 },
             );
             binds_name = true;
+            if reexport {
+                imports.reexports.push((target, Origin::Namespace));
+            }
         }
         ImportBinding::Selective { wildcard, names } => {
             for n in names {
                 let origin = ident(program, n.name);
                 let local = n.alias.map(|a| ident(program, a)).unwrap_or_else(|| origin.clone());
+                if reexport {
+                    imports.reexports.push((target, Origin::Name(origin.clone())));
+                }
                 imports.by_name.insert(
                     local,
                     ImportTarget {
@@ -297,11 +312,16 @@ fn collect_import(
                 // `{*}` (or `{*, Extra}`): keep the whole target — can't tell which
                 // unqualified names it pulls in.
                 imports.wildcards.push((node, target));
+                if reexport {
+                    imports.reexports.push((target, Origin::Namespace));
+                }
             }
         }
     }
 
-    if binds_name {
+    // A re-export is part of this module's public surface, so it is never dropped (even if
+    // unreferenced locally); only ordinary name-binding imports are drop candidates.
+    if binds_name && !reexport {
         imports.droppable.push(node);
     }
 }
