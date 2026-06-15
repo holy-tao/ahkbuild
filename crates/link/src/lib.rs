@@ -8,7 +8,7 @@
 mod bundle;
 mod search;
 
-pub use bundle::{emit_ahk, BundlePlan, BundleUnit};
+pub use bundle::{BundlePlan, BundleUnit};
 pub use search::{Builtins, SearchPath};
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};

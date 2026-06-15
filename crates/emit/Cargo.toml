@@ -1,19 +1,14 @@
 [package]
-name = "ahkbuild-cli"
+name = "ahkbuild-emit"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 publish = false
 
-[[bin]]
-name = "ahkbuild"
-path = "src/main.rs"
-
 [dependencies]
-ahkbuild-syntax.workspace = true
 ahkbuild-ir.workspace = true
 ahkbuild-link.workspace = true
-ahkbuild-emit.workspace = true
-anyhow.workspace = true
-clap.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

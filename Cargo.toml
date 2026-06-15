@@ -1,9 +1,10 @@
 [workspace]
-resolver = "2"
+resolver = "3"
 members = [
     "crates/syntax",
     "crates/ir",
     "crates/link",
+    "crates/emit",
     "crates/cli",
 ]
 
@@ -24,3 +25,4 @@ clap = { version = "4", features = ["derive"] }
 ahkbuild-syntax = { path = "crates/syntax" }
 ahkbuild-ir = { path = "crates/ir" }
 ahkbuild-link = { path = "crates/link" }
+ahkbuild-emit = { path = "crates/emit" }

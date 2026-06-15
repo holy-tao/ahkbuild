@@ -131,7 +131,7 @@ fn bundle_ahk(input: &Path, output: &Option<PathBuf>) -> Result<()> {
         eprintln!("warning: {w}");
     }
 
-    let bundled = ahkbuild_link::emit_ahk(&out.program, &out.plan);
+    let bundled = ahkbuild_emit::emit_ahk(&out.program, &out.plan);
 
     match output {
         Some(path) => {
