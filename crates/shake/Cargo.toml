@@ -1,0 +1,15 @@
+[package]
+name = "ahkbuild-shake"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+ahkbuild-ir.workspace = true
+ahkbuild-link.workspace = true
+
+[dev-dependencies]
+ahkbuild-syntax.workspace = true
+tempfile = "3"

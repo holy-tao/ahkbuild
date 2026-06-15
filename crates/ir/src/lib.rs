@@ -5,6 +5,7 @@
 //! metadata lives in side tables keyed by `NodeId`, owned by later passes.
 
 pub mod arena;
+pub mod children;
 pub mod lower;
 pub mod node;
 pub mod print;
@@ -14,6 +15,7 @@ pub mod program;
 pub use ahkbuild_syntax::{FileId, SourceFile, SourceMap, Span};
 
 pub use arena::{Arena, Node, NodeId};
+pub use children::{child_ids, children};
 pub use lower::{lower, ImportSpec, Lowering};
 pub use node::NodeKind;
 pub use print::print_program;

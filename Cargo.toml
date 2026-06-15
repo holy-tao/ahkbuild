@@ -4,6 +4,7 @@ members = [
     "crates/syntax",
     "crates/ir",
     "crates/link",
+    "crates/shake",
     "crates/emit",
     "crates/cli",
 ]
@@ -25,4 +26,5 @@ clap = { version = "4", features = ["derive"] }
 ahkbuild-syntax = { path = "crates/syntax" }
 ahkbuild-ir = { path = "crates/ir" }
 ahkbuild-link = { path = "crates/link" }
+ahkbuild-shake = { path = "crates/shake" }
 ahkbuild-emit = { path = "crates/emit" }

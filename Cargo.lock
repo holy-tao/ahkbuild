@@ -43,6 +43,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ahkbuild-shake"
+version = "0.1.0"
+dependencies = [
+ "ahkbuild-ir",
+ "ahkbuild-link",
+ "ahkbuild-syntax",
+ "tempfile",
+]
+
+[[package]]
 name = "ahkbuild-syntax"
 version = "0.1.0"
 dependencies = [
