@@ -8,13 +8,13 @@
 mod bundle;
 mod search;
 
-pub use bundle::{BundlePlan, BundleUnit};
+pub use bundle::{BundlePlan, BundleUnit, ResolvedImport};
 pub use search::{Builtins, SearchPath};
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
-use ahkbuild_ir::{GroupId, Lowering, NodeKind, Program};
+use ahkbuild_ir::{GroupId, Lowering, NodeId, NodeKind, Program};
 use anyhow::{anyhow, Context, Result};
 
 /// The result of linking: the assembled program, a backend-neutral [`BundlePlan`], and
@@ -34,16 +34,17 @@ pub fn link_entry(entry: &Path, search: &SearchPath) -> Result<LinkOutput> {
     let mut lowering = Lowering::new();
     let mut loaded: HashMap<PathBuf, GroupId> = HashMap::new();
     let mut warnings = Vec::new();
-    // Module name each group is imported as, indexed by group order (entry = None). Used to
-    // build the bundle plan.
-    let mut group_names: Vec<Option<String>> = Vec::new();
-    // Each queued file carries the name it was imported as (the entry has none).
-    let mut queue: VecDeque<(PathBuf, Option<String>)> = VecDeque::new();
+    // Canonical path each group was loaded from, indexed by group order. Used to assign each
+    // group a module name from its file.
+    let mut group_paths: Vec<PathBuf> = Vec::new();
+    // `#Import` directive -> the canonical path it resolved to (mapped to a group at the end).
+    let mut resolutions: Vec<(NodeId, PathBuf)> = Vec::new();
+    let mut queue: VecDeque<PathBuf> = VecDeque::new();
 
     let entry = canonical(entry).with_context(|| format!("entry script {}", entry.display()))?;
-    queue.push_back((entry, None));
+    queue.push_back(entry);
 
-    while let Some((path, import_name)) = queue.pop_front() {
+    while let Some(path) = queue.pop_front() {
         if loaded.contains_key(&path) {
             continue;
         }
@@ -53,7 +54,7 @@ pub fn link_entry(entry: &Path, search: &SearchPath) -> Result<LinkOutput> {
             .add_file(path.to_string_lossy().into_owned(), text)
             .ok_or_else(|| anyhow!("parser returned no tree for {}", path.display()))?;
         loaded.insert(path.clone(), gid);
-        group_names.push(import_name);
+        group_paths.push(path.clone());
 
         // Names defined in this group (plus the built-in `AHK` module): an `#Import` of one
         // of these refers to an in-group module, not a file, so it is never resolved.
@@ -85,10 +86,12 @@ pub fn link_entry(entry: &Path, search: &SearchPath) -> Result<LinkOutput> {
             }
             match search.resolve(&imp.spec, importer_dir) {
                 Some(target) => match canonical(&target) {
-                    Ok(c) if !loaded.contains_key(&c) => {
-                        queue.push_back((c, Some(imp.spec.clone())))
+                    Ok(c) => {
+                        resolutions.push((imp.node, c.clone()));
+                        if !loaded.contains_key(&c) {
+                            queue.push_back(c);
+                        }
                     }
-                    Ok(_) => {}
                     Err(e) => warnings.push(format!("{}: {e:#}", target.display())),
                 },
                 None => warnings.push(format!(
@@ -103,21 +106,86 @@ pub fn link_entry(entry: &Path, search: &SearchPath) -> Result<LinkOutput> {
     let program = lowering.finish();
     warnings.extend(same_name_group_warnings(&program));
 
+    // Assign each non-entry group a sanitized, program-unique module name from its file.
+    let names = assign_module_names(&group_paths);
     let units = program
         .groups
         .iter()
-        .enumerate()
-        .map(|(i, g)| BundleUnit {
+        .map(|g| BundleUnit {
             group: g.id,
-            module_name: group_names[i].clone(),
+            module_name: names[g.id.0 as usize].clone(),
+        })
+        .collect();
+    let resolved_imports = resolutions
+        .into_iter()
+        .filter_map(|(node, path)| {
+            loaded
+                .get(&path)
+                .map(|&group| ResolvedImport { node, group })
         })
         .collect();
 
     Ok(LinkOutput {
         program,
-        plan: BundlePlan { units },
+        plan: BundlePlan {
+            units,
+            resolved_imports,
+        },
         warnings,
     })
+}
+
+/// Assign each group an output module name from its file: `None` for the entry group (it
+/// stays `__Main`), otherwise a sanitized, program-unique identifier. The name is derived
+/// from the file stem (or the parent directory for a `__Init` package file).
+fn assign_module_names(group_paths: &[PathBuf]) -> Vec<Option<String>> {
+    // Reserve the implicit module and the built-in `AHK` module so we never collide with them.
+    let mut used: HashSet<String> = HashSet::new();
+    used.insert("__main".to_string());
+    used.insert("ahk".to_string());
+
+    let mut names = vec![None; group_paths.len()];
+    for (i, path) in group_paths.iter().enumerate().skip(1) {
+        let base = module_base_name(path);
+        let mut name = base.clone();
+        let mut n = 2;
+        while used.contains(&name.to_ascii_lowercase()) {
+            name = format!("{base}_{n}");
+            n += 1;
+        }
+        used.insert(name.to_ascii_lowercase());
+        names[i] = Some(name);
+    }
+    names
+}
+
+/// The base module name for a file: its stem, or the parent directory name for a package
+/// `__Init.ahk`, sanitized to a valid AHK identifier.
+fn module_base_name(path: &Path) -> String {
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let base = if stem.eq_ignore_ascii_case("__init") {
+        path.parent()
+            .and_then(|p| p.file_name())
+            .and_then(|s| s.to_str())
+            .unwrap_or(stem)
+    } else {
+        stem
+    };
+    sanitize_ident(base)
+}
+
+/// Coerce arbitrary text into a valid AHK module name: ASCII alphanumerics kept (others
+/// become `_`), and a leading letter guaranteed (module names may not start with a digit or
+/// underscore), so a file like `3d-utils.ahk` becomes `M3d_utils`.
+fn sanitize_ident(raw: &str) -> String {
+    let mut s: String = raw
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    if !s.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) {
+        s.insert(0, 'M');
+    }
+    s
 }
 
 fn canonical(p: &Path) -> Result<PathBuf> {

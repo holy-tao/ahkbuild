@@ -7,6 +7,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+ahkbuild-syntax.workspace = true
 ahkbuild-ir.workspace = true
 ahkbuild-link.workspace = true
 
