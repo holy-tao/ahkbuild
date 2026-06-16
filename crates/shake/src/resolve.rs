@@ -73,6 +73,10 @@ pub struct ImportTable {
     /// kept live (a consumer of this module may reference them through it — resolving that
     /// transitively is v2 work). `Origin::Namespace` re-exports the whole target.
     pub reexports: Vec<(ModuleRef, Origin)>,
+    /// Pure side-effect imports (`#Import "path"` with no name binding) resolved to a bundled
+    /// group. They bind nothing but still run the target's body, so when this module's group is
+    /// loaded they unconditionally load their target (and are never dropped). `(node, target)`.
+    pub side_effects: Vec<(NodeId, ModuleRef)>,
 }
 
 /// The whole resolution result for a program.
@@ -80,9 +84,12 @@ pub struct Resolved {
     pub modules: Vec<ModuleRef>,
     pub decls: HashMap<ModuleRef, DeclTable>,
     pub imports: HashMap<ModuleRef, ImportTable>,
-    /// Seed roots: `(node, owning module)` for every always-live statement (auto-execute
-    /// code, plus `static __New` classes whose construction has load-time side effects).
-    pub roots: Vec<(NodeId, ModuleRef)>,
+    /// Per-module seed roots: every always-live statement of that module (auto-execute code,
+    /// plus `static __New` classes whose construction has load-time side effects). A module's
+    /// roots are only seeded into the worklist once its *group* is loaded — the entry group, or
+    /// the target of a taken import (see `reach`). A module imported but never used therefore
+    /// never has its roots seeded, so it can be shaken out whole.
+    pub roots: HashMap<ModuleRef, Vec<NodeId>>,
 }
 
 /// Build the resolution tables for a linked program.
@@ -115,7 +122,7 @@ pub fn resolve(program: &Program, plan: &BundlePlan) -> Resolved {
         modules: Vec::new(),
         decls: HashMap::new(),
         imports: HashMap::new(),
-        roots: Vec::new(),
+        roots: HashMap::new(),
     };
 
     for group in &program.groups {
@@ -132,6 +139,7 @@ pub fn resolve(program: &Program, plan: &BundlePlan) -> Resolved {
 
             let mut decls = DeclTable::default();
             let mut imports = ImportTable::default();
+            let mut roots = Vec::new();
 
             for &stmt in &module.body {
                 match classify(program, stmt) {
@@ -142,12 +150,12 @@ pub fn resolve(program: &Program, plan: &BundlePlan) -> Resolved {
                         &group_primary,
                         &mut imports,
                     ),
-                    TopLevel::Root => resolved.roots.push((stmt, mref)),
+                    TopLevel::Root => roots.push(stmt),
                     TopLevel::Decl { name, also_root } => {
                         decls.all.push(stmt);
                         decls.by_name.entry(name).or_default().push(stmt);
                         if also_root {
-                            resolved.roots.push((stmt, mref));
+                            roots.push(stmt);
                         }
                     }
                 }
@@ -155,6 +163,7 @@ pub fn resolve(program: &Program, plan: &BundlePlan) -> Resolved {
 
             resolved.decls.insert(mref, decls);
             resolved.imports.insert(mref, imports);
+            resolved.roots.insert(mref, roots);
         }
     }
 
@@ -272,6 +281,10 @@ fn collect_import(
                     },
                 );
                 binds_name = true;
+            } else if !reexport {
+                // `#Import "path"` (quoted, no name): a pure side-effect import — it runs the
+                // target's body but binds nothing, so it always loads its target and is kept.
+                imports.side_effects.push((node, target));
             }
             if reexport {
                 imports.reexports.push((target, Origin::Namespace));

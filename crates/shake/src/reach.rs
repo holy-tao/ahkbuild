@@ -1,58 +1,54 @@
 //! Worklist reachability: mark every declaration that live code can reach.
 //!
-//! Seeds from the roots (`resolve` already collected every module's auto-execute statements
-//! and `static __New` classes), then drains a worklist of `(node, owning module)` pairs.
-//! Walking a live node's whole subtree, each name reference is resolved against the *owning
-//! module's* tables — so a declaration pulled in from another module resolves its own
+//! Reachability is **group-loaded**: a group's modules auto-execute (and so contribute seed
+//! roots) only once the group is *loaded* — the entry group, or the target of a taken import.
+//! Loading starts at the entry group and spreads through imports that are actually taken: a
+//! name/namespace import is taken when its bound name is referenced from live code, while
+//! side-effect, wildcard and re-export imports are taken unconditionally (they always run the
+//! target's body). A module reached only through an unused import is therefore never loaded,
+//! its roots are never seeded, and it shakes out whole.
+//!
+//! With the loaded groups seeded, the marker drains a worklist of `(node, owning module)`
+//! pairs. Walking a live node's whole subtree, each name reference is resolved against the
+//! *owning module's* tables — so a declaration pulled in from another module resolves its own
 //! references in its own module's namespace. The `live` set doubles as the visited guard.
 
 use std::collections::HashSet;
 
-use ahkbuild_ir::{children, NodeId, NodeKind, Program, Span};
+use ahkbuild_ir::{children, GroupId, NodeId, NodeKind, Program, Span};
 
 use crate::resolve::{ModuleRef, Origin, Resolved};
 
-/// The outcome of marking: which nodes are live, and which imports were actually used.
+/// The outcome of marking: which nodes are live, which imports were used, and which groups
+/// were loaded (a group never loaded is dead in its entirety).
 pub struct Reachability {
     pub live: HashSet<NodeId>,
     pub used_imports: HashSet<NodeId>,
+    pub loaded: HashSet<GroupId>,
 }
 
-/// Mark all reachable declarations starting from the seed roots.
+/// Mark all reachable declarations, starting by loading the entry group.
 pub fn mark(program: &Program, resolved: &Resolved) -> Reachability {
     let mut m = Marker {
         program,
         resolved,
         live: HashSet::new(),
         used_imports: HashSet::new(),
+        loaded: HashSet::new(),
         blown: HashSet::new(),
         worklist: Vec::new(),
     };
 
-    for &(node, mref) in &resolved.roots {
-        m.worklist.push((node, mref));
-    }
-    // Wildcard imports keep their whole target (can't tell which unqualified names they pull
-    // in); seed those targets' declarations and mark the import used.
-    for imports in resolved.imports.values() {
-        for &(import_node, target) in &imports.wildcards {
-            m.used_imports.insert(import_node);
-            m.enqueue_all_decls(target);
-        }
-        // Re-exports (`#Import export ...`) are public surface: keep the re-exported target
-        // declarations live unconditionally (a consumer may reach them through this module).
-        for (target, origin) in &imports.reexports {
-            match origin {
-                Origin::Namespace => m.enqueue_all_decls(*target),
-                Origin::Name(name) => m.enqueue_named_decl(*target, name),
-            }
-        }
+    // The entry group (the main script) always runs; everything else loads transitively.
+    if let Some(entry) = program.groups.first() {
+        m.load_group(entry.id);
     }
 
     m.run();
     Reachability {
         live: m.live,
         used_imports: m.used_imports,
+        loaded: m.loaded,
     }
 }
 
@@ -61,6 +57,9 @@ struct Marker<'a> {
     resolved: &'a Resolved,
     live: HashSet<NodeId>,
     used_imports: HashSet<NodeId>,
+    /// Groups whose bodies are known to run. Seeded from the entry group and grown as taken
+    /// imports load their targets. Doubles as the visited guard for `load_group`.
+    loaded: HashSet<GroupId>,
     /// Modules whose member/name resolution has been defeated by a dynamic construct; their
     /// declarations (and imports) are all kept. Tracked so we blow up each module only once.
     blown: HashSet<ModuleRef>,
@@ -68,6 +67,59 @@ struct Marker<'a> {
 }
 
 impl Marker<'_> {
+    /// Load a group: seed every one of its modules' roots, and follow the imports that are
+    /// taken unconditionally (side-effect, wildcard, re-export), loading their targets too.
+    /// Idempotent — the `loaded` set guards against reprocessing and import cycles.
+    fn load_group(&mut self, gid: GroupId) {
+        if !self.loaded.insert(gid) {
+            return;
+        }
+        let Some(group) = self.program.groups.iter().find(|g| g.id == gid) else {
+            return;
+        };
+        for module_id in group.modules.clone() {
+            let mref = ModuleRef {
+                group: gid,
+                module: module_id,
+            };
+            // This module auto-executes now that its group is loaded — seed its roots.
+            let roots = self.resolved.roots.get(&mref).cloned().unwrap_or_default();
+            for r in roots {
+                self.worklist.push((r, mref));
+            }
+            // Follow the always-taken imports (clone out first so the arena borrow ends).
+            let (side, wild, reex) = match self.resolved.imports.get(&mref) {
+                Some(imp) => (
+                    imp.side_effects.clone(),
+                    imp.wildcards.clone(),
+                    imp.reexports.clone(),
+                ),
+                None => (Vec::new(), Vec::new(), Vec::new()),
+            };
+            // Side-effect imports run the target body but bind nothing.
+            for (node, target) in side {
+                self.used_imports.insert(node);
+                self.load_group(target.group);
+            }
+            // Wildcard imports keep the whole target (can't tell which unqualified names they
+            // pull in); seed its declarations and mark the import used.
+            for (node, target) in wild {
+                self.used_imports.insert(node);
+                self.enqueue_all_decls(target);
+                self.load_group(target.group);
+            }
+            // Re-exports (`#Import export ...`) are public surface: keep the re-exported target
+            // declarations live (a consumer may reach them through this module).
+            for (target, origin) in reex {
+                match origin {
+                    Origin::Namespace => self.enqueue_all_decls(target),
+                    Origin::Name(name) => self.enqueue_named_decl(target, &name),
+                }
+                self.load_group(target.group);
+            }
+        }
+    }
+
     fn run(&mut self) {
         while let Some((id, mref)) = self.worklist.pop() {
             if !self.live.insert(id) {
@@ -127,36 +179,38 @@ impl Marker<'_> {
         }
     }
 
-    /// Resolve a referenced name within `mref`: mark matching local declarations live, and
-    /// follow import bindings into their target module.
+    /// Resolve a referenced name within `mref`: mark matching local declarations live, and —
+    /// if the name is an import binding — take that import, loading its target module (the
+    /// reference is the "use" that makes the import worth keeping) and pulling in its decls.
     fn reference(&mut self, name: &str, mref: ModuleRef) {
-        let resolved = self.resolved;
-        if let Some(tbl) = resolved.decls.get(&mref) {
-            if let Some(nodes) = tbl.by_name.get(name) {
-                for &d in nodes {
-                    self.worklist.push((d, mref));
-                }
-            }
+        // Extract owned data under the immutable borrow first, then mutate.
+        let locals: Vec<NodeId> = self
+            .resolved
+            .decls
+            .get(&mref)
+            .and_then(|tbl| tbl.by_name.get(name))
+            .cloned()
+            .unwrap_or_default();
+        for d in locals {
+            self.worklist.push((d, mref));
         }
-        if let Some(imports) = resolved.imports.get(&mref) {
-            if let Some(t) = imports.by_name.get(name) {
-                self.used_imports.insert(t.node);
-                match &t.origin {
-                    // `X` (namespace): member access may be dynamic -> keep all target decls.
-                    Origin::Namespace => self.enqueue_all_decls(t.target),
-                    // `{a}` (selective): just the named export `a` in the target.
-                    Origin::Name(origin) => {
-                        let target = t.target;
-                        if let Some(tt) = resolved.decls.get(&target) {
-                            if let Some(nodes) = tt.by_name.get(origin) {
-                                for &d in nodes {
-                                    self.worklist.push((d, target));
-                                }
-                            }
-                        }
-                    }
-                }
+
+        let binding = self
+            .resolved
+            .imports
+            .get(&mref)
+            .and_then(|imports| imports.by_name.get(name))
+            .map(|t| (t.node, t.target, t.origin.clone()));
+        if let Some((node, target, origin)) = binding {
+            self.used_imports.insert(node);
+            match origin {
+                // `X` (namespace): member access may be dynamic -> keep all target decls.
+                Origin::Namespace => self.enqueue_all_decls(target),
+                // `{a}` (selective): just the named export `a` in the target.
+                Origin::Name(origin) => self.enqueue_named_decl(target, &origin),
             }
+            // Taking the import runs the target's body, so its group loads.
+            self.load_group(target.group);
         }
     }
 
@@ -168,18 +222,20 @@ impl Marker<'_> {
             return;
         }
         self.enqueue_all_decls(m);
-        let resolved = self.resolved;
-        if let Some(imports) = resolved.imports.get(&m) {
-            let targets: Vec<(NodeId, ModuleRef)> = imports
+        let targets: Vec<(NodeId, ModuleRef)> = match self.resolved.imports.get(&m) {
+            Some(imports) => imports
                 .by_name
                 .values()
                 .map(|t| (t.node, t.target))
                 .chain(imports.wildcards.iter().copied())
-                .collect();
-            for (node, target) in targets {
-                self.used_imports.insert(node);
-                self.enqueue_all_decls(target);
-            }
+                .chain(imports.side_effects.iter().copied())
+                .collect(),
+            None => Vec::new(),
+        };
+        for (node, target) in targets {
+            self.used_imports.insert(node);
+            self.enqueue_all_decls(target);
+            self.load_group(target.group);
         }
     }
 

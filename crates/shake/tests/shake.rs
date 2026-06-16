@@ -188,6 +188,79 @@ fn reference_inside_parentheses_keeps_its_import() {
 }
 
 #[test]
+fn unused_import_does_not_load_its_module_even_with_static_new() {
+    // The regression this whole change targets: a module reached only through an *unused*
+    // import must not be loaded, so its `static __New` class never becomes a root. Importing
+    // is the "use"; without it, the target's body never runs and the module shakes out whole.
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(tmp.path(), "main.ahk", "#Import Lib {Thing}\nx := 1\n");
+    write(
+        tmp.path(),
+        "Lib.ahk",
+        "export class Thing {\n}\n\nclass Boot {\n    static __New() {\n    }\n}\n",
+    );
+    let (p, r) = run(&main);
+
+    // `Thing` is never referenced -> Lib is not loaded -> Boot's static __New is not a root.
+    assert_eq!(r.dropped_imports.len(), 1, "the unused import is dropped");
+    assert_eq!(
+        r.dead_modules.len(),
+        1,
+        "Lib is removed despite its static __New class"
+    );
+    // Sanity: the dropped node is the import directive, not Boot.
+    assert!(matches!(
+        p.arena[r.dropped_imports[0]].kind,
+        NodeKind::ImportDirective(_)
+    ));
+}
+
+#[test]
+fn used_import_loads_module_and_its_static_new_runs() {
+    // The flip side: once the import is taken, the whole target body runs, so a sibling
+    // `static __New` class in the loaded module is kept even though nothing references it.
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(tmp.path(), "main.ahk", "#Import Lib {Thing}\nThing()\n");
+    write(
+        tmp.path(),
+        "Lib.ahk",
+        "export Thing() {\n}\n\nclass Boot {\n    static __New() {\n    }\n}\n",
+    );
+    let (p, r) = run(&main);
+
+    assert!(r.dropped_imports.is_empty(), "the import is used");
+    assert!(r.dead_modules.is_empty(), "Lib is loaded");
+    // Boot stays live via its static __New now that Lib's body runs.
+    assert!(dead_names(&p, &r).is_empty(), "dead: {:?}", dead_names(&p, &r));
+}
+
+#[test]
+fn side_effect_import_loads_its_module() {
+    // A pure side-effect import (`#Import "path"`, no binding) binds nothing but still runs
+    // the target's body, so it must load the module and is never dropped.
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(tmp.path(), "main.ahk", "#Import \"side.ahk\"\nx := 1\n");
+    write(
+        tmp.path(),
+        "side.ahk",
+        "class Boot {\n    static __New() {\n    }\n}\n",
+    );
+    let (p, r) = run(&main);
+
+    assert!(
+        r.dropped_imports.is_empty(),
+        "a side-effect import is never dropped: {:?}",
+        r.dropped_imports
+    );
+    assert!(
+        r.dead_modules.is_empty(),
+        "side.ahk must stay loaded: {:?}",
+        r.dead_modules
+    );
+    assert!(dead_names(&p, &r).is_empty(), "dead: {:?}", dead_names(&p, &r));
+}
+
+#[test]
 fn unreferenced_import_is_dropped_and_its_module_removed() {
     let tmp = tempfile::tempdir().unwrap();
     let main = write(tmp.path(), "main.ahk", "#Import Lib\nx := 1\n");

@@ -80,8 +80,11 @@ pub fn shake(program: &Program, plan: &BundlePlan) -> ShakeResult {
             }
         }
 
+        // A module whose group was never loaded never runs at all: it's dead in its entirety,
+        // imports and all (a non-droppable import inside it must not keep it alive).
+        let group_loaded = reach.loaded.contains(&mref.group);
         let is_entry = Some(mref.module) == entry;
-        if !is_entry && !has_live && !has_kept_import {
+        if !is_entry && (!group_loaded || (!has_live && !has_kept_import)) {
             // Nothing in this module survives — remove it whole.
             result.dead_modules.push(mref.module);
             result.dead.insert(mref.module); // its `#Module` header span
