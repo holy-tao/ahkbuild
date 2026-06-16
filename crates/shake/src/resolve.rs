@@ -94,27 +94,20 @@ pub struct Resolved {
 
 /// Build the resolution tables for a linked program.
 pub fn resolve(program: &Program, plan: &BundlePlan) -> Resolved {
-    let import_group: HashMap<NodeId, GroupId> = plan
+    // Each resolved `#Import` directive -> the specific target module it binds. The linker has
+    // already picked the precise module (a path-qualified or in-group sub-module, or a plain
+    // file import's primary `__Main`), so resolution follows the right declarations.
+    let import_target: HashMap<NodeId, ModuleRef> = plan
         .resolved_imports
         .iter()
-        .map(|ri| (ri.node, ri.group))
-        .collect();
-
-    // group -> its primary module (modules[0], the `__Main` / entry module of that file),
-    // which is what an `#Import` of the group's file resolves to.
-    let group_primary: HashMap<GroupId, ModuleRef> = program
-        .groups
-        .iter()
-        .filter_map(|g| {
-            g.modules.first().map(|&m| {
-                (
-                    g.id,
-                    ModuleRef {
-                        group: g.id,
-                        module: m,
-                    },
-                )
-            })
+        .map(|ri| {
+            (
+                ri.node,
+                ModuleRef {
+                    group: ri.group,
+                    module: ri.module,
+                },
+            )
         })
         .collect();
 
@@ -143,13 +136,7 @@ pub fn resolve(program: &Program, plan: &BundlePlan) -> Resolved {
 
             for &stmt in &module.body {
                 match classify(program, stmt) {
-                    TopLevel::Import => collect_import(
-                        program,
-                        stmt,
-                        &import_group,
-                        &group_primary,
-                        &mut imports,
-                    ),
+                    TopLevel::Import => collect_import(program, stmt, &import_target, &mut imports),
                     TopLevel::Root => roots.push(stmt),
                     TopLevel::Decl { name, also_root } => {
                         decls.all.push(stmt);
@@ -247,21 +234,16 @@ fn has_static_new(program: &Program, t: &ahkbuild_ir::node::TypeDecl) -> bool {
 fn collect_import(
     program: &Program,
     node: NodeId,
-    import_group: &HashMap<NodeId, GroupId>,
-    group_primary: &HashMap<GroupId, ModuleRef>,
+    import_target: &HashMap<NodeId, ModuleRef>,
     imports: &mut ImportTable,
 ) {
     let NodeKind::ImportDirective(d) = &program.arena[node].kind else {
         return;
     };
-    // Only imports the linker resolved to a bundled file create cross-module name edges.
-    // In-group `#Module` refs, the builtin `AHK`, embedded `*RES`, and unresolved imports
-    // are left untouched (never dropped, no decl edges).
-    let Some(target) = import_group
-        .get(&node)
-        .and_then(|g| group_primary.get(g))
-        .copied()
-    else {
+    // Only imports the linker resolved to a bundled module create cross-module name edges.
+    // The builtin `AHK`, embedded `*RES`, and unresolved imports are left untouched (never
+    // dropped, no decl edges).
+    let Some(&target) = import_target.get(&node) else {
         return;
     };
 
@@ -307,9 +289,14 @@ fn collect_import(
         ImportBinding::Selective { wildcard, names } => {
             for n in names {
                 let origin = ident(program, n.name);
-                let local = n.alias.map(|a| ident(program, a)).unwrap_or_else(|| origin.clone());
+                let local = n
+                    .alias
+                    .map(|a| ident(program, a))
+                    .unwrap_or_else(|| origin.clone());
                 if reexport {
-                    imports.reexports.push((target, Origin::Name(origin.clone())));
+                    imports
+                        .reexports
+                        .push((target, Origin::Name(origin.clone())));
                 }
                 imports.by_name.insert(
                     local,
@@ -324,6 +311,9 @@ fn collect_import(
             if *wildcard {
                 // `{*}` (or `{*, Extra}`): keep the whole target — can't tell which
                 // unqualified names it pulls in.
+                // TODO: wildcard imports pull in all exported names - walk into imported module
+                //       and mark all imports live.
+                // TODO: another option is to resolve these to symbols ahead of time
                 imports.wildcards.push((node, target));
                 if reexport {
                     imports.reexports.push((target, Origin::Namespace));

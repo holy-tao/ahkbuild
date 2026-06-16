@@ -88,3 +88,71 @@ fn same_stem_in_different_dirs_gets_unique_names() {
     assert!(ahk.contains("#Import Util as A"), "{ahk}");
     assert!(ahk.contains("#Import Util_2 as B"), "{ahk}");
 }
+
+#[test]
+fn colliding_submodules_across_groups_are_renamed() {
+    let tmp = tempfile::tempdir().unwrap();
+    // Two imported files each define a `#Module Helper`. In the flat single-file output their
+    // names would merge; the emitter must give one of them a distinct name.
+    let main = write(tmp.path(), "main.ahk", "#Import A\n#Import B\n");
+    write(tmp.path(), "A.ahk", "#Module Helper\nx := 1\n");
+    write(tmp.path(), "B.ahk", "#Module Helper\ny := 2\n");
+
+    let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
+    let ahk = ahkbuild_emit::emit_ahk(&out.program, &out.plan, None);
+
+    assert!(ahk.contains("\n#Module Helper\n"), "{ahk}");
+    assert!(ahk.contains("\n#Module Helper_2\n"), "{ahk}");
+    // The group wrappers themselves are present and distinct.
+    assert!(ahk.contains("\n#Module A\n"), "{ahk}");
+    assert!(ahk.contains("\n#Module B\n"), "{ahk}");
+}
+
+#[test]
+fn path_qualified_import_is_rewritten_to_submodule_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    // A path-qualified import targets Thing's `Inner` sub-module; the spec must be rewritten
+    // to that sub-module's output name (here unchanged: `Inner`).
+    let main = write(tmp.path(), "main.ahk", "#Import \"Thing:Inner\" as I\nI.Q()\n");
+    write(
+        tmp.path(),
+        "Thing.ahk",
+        "P := 1\n#Module Inner\nexport Q() {\n    return 2\n}\n",
+    );
+
+    let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
+    let ahk = ahkbuild_emit::emit_ahk(&out.program, &out.plan, None);
+
+    assert!(!ahk.contains("Thing:Inner"), "path spec should be gone: {ahk}");
+    assert!(ahk.contains("#Import Inner as I"), "{ahk}");
+    assert!(ahk.contains("\n#Module Thing\n"), "{ahk}");
+    assert!(ahk.contains("\n#Module Inner\n"), "{ahk}");
+}
+
+#[test]
+fn submodule_colliding_with_group_name_is_renamed_and_redirected() {
+    let tmp = tempfile::tempdir().unwrap();
+    // Foo.ahk's group is named `Foo`; Bar.ahk has an inner `#Module Foo` that collides with
+    // it. The inner one must be renamed and the path-qualified importer redirected to it.
+    let main = write(
+        tmp.path(),
+        "main.ahk",
+        "#Import Foo\n#Import \"Bar:Foo\" as BF\nBF.X()\n",
+    );
+    write(tmp.path(), "Foo.ahk", "export Y() {\n    return 1\n}\n");
+    write(
+        tmp.path(),
+        "Bar.ahk",
+        "Z := 1\n#Module Foo\nexport X() {\n    return 2\n}\n",
+    );
+
+    let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
+    let ahk = ahkbuild_emit::emit_ahk(&out.program, &out.plan, None);
+
+    // Foo's group keeps `Foo`; Bar's inner `#Module Foo` is renamed to `Foo_2`.
+    assert!(ahk.contains("\n#Module Foo\n"), "{ahk}");
+    assert!(ahk.contains("\n#Module Foo_2\n"), "{ahk}");
+    // The bare import of Foo is untouched; the path-qualified one points at the renamed module.
+    assert!(ahk.contains("#Import Foo\n"), "{ahk}");
+    assert!(ahk.contains("#Import Foo_2 as BF"), "{ahk}");
+}

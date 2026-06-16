@@ -134,6 +134,23 @@ fn selective_import_drops_the_unreferenced_export() {
 }
 
 #[test]
+fn path_qualified_import_keeps_only_referenced_submodule_export() {
+    // A path-qualified import binds a sub-module's export. Reachability must resolve against
+    // that *sub-module's* declarations (not the group's primary `__Main`): the referenced
+    // export survives and its unreferenced sibling shakes out.
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(tmp.path(), "main.ahk", "#Import \"Thing:Inner\" {Q}\nQ()\n");
+    write(
+        tmp.path(),
+        "Thing.ahk",
+        "P := 1\n#Module Inner\nexport Q() {\n}\n\nexport Z() {\n}\n",
+    );
+    let (p, r) = run(&main);
+    assert_eq!(dead_names(&p, &r), names(&["Z"]));
+    assert!(r.dropped_imports.is_empty(), "the import is used");
+}
+
+#[test]
 fn reexport_chain_is_kept_not_trimmed() {
     // A imports a barrel B (`#Import export ...`) that re-exports from C, which itself
     // re-exports a sibling's named export. Even though nothing in B or C *references* those

@@ -86,7 +86,7 @@ fn shared_import_is_loaded_once() {
 }
 
 #[test]
-fn same_name_modules_across_groups_warn() {
+fn same_name_modules_across_groups_get_unique_output_names() {
     let tmp = tempfile::tempdir().unwrap();
     let main = write(tmp.path(), "main.ahk", "#Import A\n#Import B\n");
     write(tmp.path(), "A.ahk", "#Module Helper\nx := 1\n");
@@ -94,20 +94,64 @@ fn same_name_modules_across_groups_warn() {
 
     let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
     assert_eq!(out.program.groups.len(), 3);
-    // Both A and B carry a `Helper` sub-module -> the merge-hazard warning fires.
-    assert!(
-        out.warnings
-            .iter()
-            .any(|w| w.contains("Helper") && w.contains("groups")),
-        "expected a same-name warning, got: {:?}",
-        out.warnings
-    );
-    // The two Helpers are kept as distinct modules in distinct groups.
+    // The merge hazard is now resolved by renaming, so no warning fires.
+    assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+    // Both A and B still carry a `Helper` sub-module in the IR (distinct groups)...
     let helpers = module_names(&out.program)
         .iter()
         .filter(|n| *n == "Helper")
         .count();
     assert_eq!(helpers, 2);
+    // ...but they are assigned distinct, program-unique output names.
+    let assigned: Vec<&String> = out.plan.module_names.values().collect();
+    assert!(assigned.iter().any(|n| *n == "Helper"));
+    assert!(assigned.iter().any(|n| *n == "Helper_2"));
+}
+
+#[test]
+fn path_qualified_import_resolves_to_submodule() {
+    let tmp = tempfile::tempdir().unwrap();
+    // The entry path-qualifies a sub-module of Thing's group.
+    let main = write(
+        tmp.path(),
+        "main.ahk",
+        "#Import \"Thing:Inner\" as I\nI.Q()\n",
+    );
+    write(
+        tmp.path(),
+        "Thing.ahk",
+        "P := 1\n#Module Inner\nexport Q() {\n    return 2\n}\n",
+    );
+
+    let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
+    assert_eq!(out.program.groups.len(), 2, "entry + Thing");
+    assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+
+    // The import resolved to the *Inner* sub-module node, not Thing's primary `__Main`.
+    let ri = out
+        .plan
+        .resolved_imports
+        .iter()
+        .find(|ri| ri.group.0 == 1)
+        .expect("a resolved import into Thing's group");
+    let NodeKind::Module(m) = &out.program.arena[ri.module].kind else {
+        panic!("import target is not a module node");
+    };
+    assert_eq!(m.name, "Inner");
+}
+
+#[test]
+fn missing_submodule_warns() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(tmp.path(), "main.ahk", "#Import \"Thing:Nope\" as N\n");
+    write(tmp.path(), "Thing.ahk", "P := 1\n");
+
+    let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
+    assert!(
+        out.warnings.iter().any(|w| w.contains("Nope")),
+        "expected a missing-sub-module warning, got: {:?}",
+        out.warnings
+    );
 }
 
 #[test]

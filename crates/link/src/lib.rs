@@ -11,34 +11,55 @@ mod search;
 pub use bundle::{BundlePlan, BundleUnit, ResolvedImport};
 pub use search::{Builtins, SearchPath};
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
+use ahkbuild_ir::node::Module;
 use ahkbuild_ir::{GroupId, Lowering, NodeId, NodeKind, Program};
 use anyhow::{anyhow, Context, Result};
 
 /// The result of linking: the assembled program, a backend-neutral [`BundlePlan`], and
-/// non-fatal diagnostics (unresolved imports, deferred forms, same-name groups).
+/// non-fatal diagnostics (unresolved imports, missing sub-modules).
 pub struct LinkOutput {
     pub program: Program,
     pub plan: BundlePlan,
     pub warnings: Vec<String>,
 }
 
+/// One `#Import`'s resolution intent, recorded during the breadth-first walk and finished into
+/// a [`ResolvedImport`] once every group is lowered (so module nodes exist to point at).
+enum Resolution {
+    /// Resolved to a file: the canonical `path` (a bundled group) and, for a path-qualified
+    /// `Path:Module` import, the target `submodule` name (else the group's primary `__Main`).
+    File {
+        node: NodeId,
+        importer: PathBuf,
+        path: PathBuf,
+        submodule: Option<String>,
+    },
+    /// An in-group `#Module` reference: `name` is a module defined in the importing `group`.
+    InGroup {
+        node: NodeId,
+        group: GroupId,
+        name: String,
+    },
+}
+
 /// Link `entry` and everything it transitively `#Import`s into one multi-group [`Program`].
 ///
 /// Files are loaded breadth-first and deduped by canonical path, so a module imported from
-/// several places is lowered once. Imports that name no file — embedded `*RESNAME` and (for
-/// now) path-qualified `Path:Module` — are skipped with a diagnostic rather than failing.
+/// several places is lowered once. Imports that name no file — embedded `*RESNAME` and the
+/// built-in `AHK` module — are skipped silently; in-group `#Module` references and
+/// path-qualified `Path:Module` sub-module imports resolve to a specific module.
 pub fn link_entry(entry: &Path, search: &SearchPath) -> Result<LinkOutput> {
     let mut lowering = Lowering::new();
     let mut loaded: HashMap<PathBuf, GroupId> = HashMap::new();
     let mut warnings = Vec::new();
     // Canonical path each group was loaded from, indexed by group order. Used to assign each
-    // group a module name from its file.
+    // group's primary module a name from its file.
     let mut group_paths: Vec<PathBuf> = Vec::new();
-    // `#Import` directive -> the canonical path it resolved to (mapped to a group at the end).
-    let mut resolutions: Vec<(NodeId, PathBuf)> = Vec::new();
+    // Each `#Import` directive's resolution intent, finished after lowering completes.
+    let mut resolutions: Vec<Resolution> = Vec::new();
     let mut queue: VecDeque<PathBuf> = VecDeque::new();
 
     let entry = canonical(entry).with_context(|| format!("entry script {}", entry.display()))?;
@@ -56,41 +77,54 @@ pub fn link_entry(entry: &Path, search: &SearchPath) -> Result<LinkOutput> {
         loaded.insert(path.clone(), gid);
         group_paths.push(path.clone());
 
-        // Names defined in this group (plus the built-in `AHK` module): an `#Import` of one
-        // of these refers to an in-group module, not a file, so it is never resolved.
-        let mut local: HashSet<String> = lowering
+        // Names defined in this group: an `#Import` of one of these refers to an in-group
+        // module, not a file, and in-file modules take precedence over the filesystem.
+        let module_names_lc: HashSet<String> = lowering
             .group_module_names(gid)
             .iter()
             .map(|n| n.to_ascii_lowercase())
             .collect();
-        local.insert("ahk".to_string());
 
-        let importer_dir = path.parent().unwrap_or_else(|| Path::new("."));
+        let importer_dir = path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
         for imp in lowering.group_imports(gid) {
             // Embedded resources (`*RESNAME`) have no file to resolve.
             if imp.spec.starts_with('*') {
                 continue;
             }
-            // In-group `#Module` reference or the built-in `AHK` module: no file.
-            if local.contains(&imp.spec.to_ascii_lowercase()) {
+            let spec_lc = imp.spec.to_ascii_lowercase();
+            // In-file `#Module` reference: resolves to that module, not a file.
+            if module_names_lc.contains(&spec_lc) {
+                resolutions.push(Resolution::InGroup {
+                    node: imp.node,
+                    group: gid,
+                    name: imp.spec.clone(),
+                });
                 continue;
             }
-            // Path-qualified sub-module imports (`Path:Module`) are not resolved yet.
-            if imp.spec.contains(':') {
-                warnings.push(format!(
-                    "{}: path-qualified import \"{}\" not resolved yet",
-                    path.display(),
-                    imp.spec
-                ));
+            // The built-in `AHK` module: no file.
+            if spec_lc == "ahk" {
                 continue;
             }
-            match search.resolve(&imp.spec, importer_dir) {
+            // A quoted spec may be path-qualified (`Path:Module`); an unquoted spec is a bare
+            // module name resolved as a file.
+            let (path_spec, submodule) = if imp.quoted {
+                let (p, m) = split_module_qualifier(&imp.spec);
+                (p, m.map(str::to_string))
+            } else {
+                (imp.spec.as_str(), None)
+            };
+            match search.resolve(path_spec, &importer_dir) {
                 Some(target) => match canonical(&target) {
                     Ok(c) => {
-                        resolutions.push((imp.node, c.clone()));
                         if !loaded.contains_key(&c) {
-                            queue.push_back(c);
+                            queue.push_back(c.clone());
                         }
+                        resolutions.push(Resolution::File {
+                            node: imp.node,
+                            importer: path.clone(),
+                            path: c,
+                            submodule,
+                        });
                     }
                     Err(e) => warnings.push(format!("{}: {e:#}", target.display())),
                 },
@@ -104,25 +138,76 @@ pub fn link_entry(entry: &Path, search: &SearchPath) -> Result<LinkOutput> {
     }
 
     let program = lowering.finish();
-    warnings.extend(same_name_group_warnings(&program));
 
-    // Assign each non-entry group a sanitized, program-unique module name from its file.
-    let names = assign_module_names(&group_paths);
+    // `(group, lowercased module name) -> module node`, for resolving path-qualified and
+    // in-group import targets. First definition wins (a within-group reopen merges).
+    let mut registry: HashMap<(GroupId, String), NodeId> = HashMap::new();
+    for group in &program.groups {
+        for &mid in &group.modules {
+            if let NodeKind::Module(m) = &program.arena[mid].kind {
+                registry
+                    .entry((group.id, m.name.to_ascii_lowercase()))
+                    .or_insert(mid);
+            }
+        }
+    }
+
+    let mut resolved_imports = Vec::new();
+    for res in resolutions {
+        match res {
+            Resolution::File {
+                node,
+                importer,
+                path,
+                submodule,
+            } => {
+                let Some(&group) = loaded.get(&path) else {
+                    continue;
+                };
+                let module = match submodule {
+                    None => {
+                        // Plain file import -> the group's primary `__Main` module.
+                        match program.groups[group.0 as usize].modules.first() {
+                            Some(&m) => m,
+                            None => continue,
+                        }
+                    }
+                    Some(name) => match registry.get(&(group, name.to_ascii_lowercase())) {
+                        Some(&m) => m,
+                        None => {
+                            warnings.push(format!(
+                                "{}: sub-module \"{}\" not found in \"{}\"",
+                                importer.display(),
+                                name,
+                                path.display()
+                            ));
+                            continue;
+                        }
+                    },
+                };
+                resolved_imports.push(ResolvedImport {
+                    node,
+                    group,
+                    module,
+                });
+            }
+            Resolution::InGroup { node, group, name } => {
+                if let Some(&module) = registry.get(&(group, name.to_ascii_lowercase())) {
+                    resolved_imports.push(ResolvedImport {
+                        node,
+                        group,
+                        module,
+                    });
+                }
+            }
+        }
+    }
+
+    let module_names = assign_module_names(&program, &group_paths);
     let units = program
         .groups
         .iter()
-        .map(|g| BundleUnit {
-            group: g.id,
-            module_name: names[g.id.0 as usize].clone(),
-        })
-        .collect();
-    let resolved_imports = resolutions
-        .into_iter()
-        .filter_map(|(node, path)| {
-            loaded
-                .get(&path)
-                .map(|&group| ResolvedImport { node, group })
-        })
+        .map(|g| BundleUnit { group: g.id })
         .collect();
 
     Ok(LinkOutput {
@@ -130,31 +215,74 @@ pub fn link_entry(entry: &Path, search: &SearchPath) -> Result<LinkOutput> {
         plan: BundlePlan {
             units,
             resolved_imports,
+            module_names,
         },
         warnings,
     })
 }
 
-/// Assign each group an output module name from its file: `None` for the entry group (it
-/// stays `__Main`), otherwise a sanitized, program-unique identifier. The name is derived
-/// from the file stem (or the parent directory for a `__Init` package file).
-fn assign_module_names(group_paths: &[PathBuf]) -> Vec<Option<String>> {
+/// Split a quoted import spec into `(path, Some(submodule))` for a path-qualified
+/// `Path:Module` import (v2.1-alpha.21+), or `(spec, None)` otherwise. The sub-module suffix
+/// is the text after the **last** `:`, and only counts if it is a bare identifier — no path
+/// separators — so a drive-letter colon (`C:\dir\file.ahk`) is not mistaken for a qualifier.
+fn split_module_qualifier(spec: &str) -> (&str, Option<&str>) {
+    if let Some(idx) = spec.rfind(':') {
+        let (path, rest) = (&spec[..idx], &spec[idx + 1..]);
+        let mut chars = rest.chars();
+        let valid = match chars.next() {
+            Some(c) if c.is_ascii_alphabetic() || c == '_' => {
+                chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+            }
+            _ => false,
+        };
+        if valid && !path.is_empty() {
+            return (path, Some(rest));
+        }
+    }
+    (spec, None)
+}
+
+/// Assign every module a program-unique output name, keyed by `(group, module node)`. The
+/// entry group's primary keeps `__Main` (emitted headerless); every imported group's primary
+/// is named from its file, and every written `#Module` sub-module keeps its name. Groups are
+/// processed in order (entry first), so the main script's modules keep their names and later
+/// collisions get a numeric suffix.
+fn assign_module_names(
+    program: &Program,
+    group_paths: &[PathBuf],
+) -> HashMap<(GroupId, NodeId), String> {
     // Reserve the implicit module and the built-in `AHK` module so we never collide with them.
     let mut used: HashSet<String> = HashSet::new();
     used.insert("__main".to_string());
     used.insert("ahk".to_string());
 
-    let mut names = vec![None; group_paths.len()];
-    for (i, path) in group_paths.iter().enumerate().skip(1) {
-        let base = module_base_name(path);
-        let mut name = base.clone();
-        let mut n = 2;
-        while used.contains(&name.to_ascii_lowercase()) {
-            name = format!("{base}_{n}");
-            n += 1;
+    let mut names = HashMap::new();
+    for (gi, group) in program.groups.iter().enumerate() {
+        for (mi, &mid) in group.modules.iter().enumerate() {
+            let NodeKind::Module(module) = &program.arena[mid].kind else {
+                continue;
+            };
+            if gi == 0 && mi == 0 {
+                // The entry group's primary stays the implicit `__Main` (no header emitted).
+                names.insert((group.id, mid), Module::MAIN.to_string());
+                continue;
+            }
+            let base = if mi == 0 {
+                // An imported group's primary: name it from its file.
+                module_base_name(&group_paths[gi])
+            } else {
+                // A written `#Module` sub-module: keep its name.
+                module.name.clone()
+            };
+            let mut name = base.clone();
+            let mut n = 2;
+            while used.contains(&name.to_ascii_lowercase()) {
+                name = format!("{base}_{n}");
+                n += 1;
+            }
+            used.insert(name.to_ascii_lowercase());
+            names.insert((group.id, mid), name);
         }
-        used.insert(name.to_ascii_lowercase());
-        names[i] = Some(name);
     }
     names
 }
@@ -190,37 +318,4 @@ fn sanitize_ident(raw: &str) -> String {
 
 fn canonical(p: &Path) -> Result<PathBuf> {
     std::fs::canonicalize(p).with_context(|| format!("resolving {}", p.display()))
-}
-
-/// Warn about non-`__Main` `#Module` names defined in more than one group — the hazard the
-/// single-`.ahk` emitter must rename (the interpreter keeps them isolated; see the runtime
-/// probes). `__Main` is excluded: every group has one and they stay distinct per origin.
-fn same_name_group_warnings(program: &Program) -> Vec<String> {
-    // Keyed by the case-insensitive identity, but keep a representative original-case name
-    // for the message.
-    let mut counts: BTreeMap<String, (usize, String)> = BTreeMap::new();
-    for group in &program.groups {
-        let mut here: BTreeMap<String, String> = BTreeMap::new();
-        for &m in &group.modules {
-            if let NodeKind::Module(module) = &program.arena[m].kind {
-                if !module.is_main() {
-                    here.entry(module.name.to_ascii_lowercase())
-                        .or_insert_with(|| module.name.clone());
-                }
-            }
-        }
-        for (key, display) in here {
-            let entry = counts.entry(key).or_insert((0, display));
-            entry.0 += 1;
-        }
-    }
-    counts
-        .into_iter()
-        .filter(|(_, (c, _))| *c > 1)
-        .map(|(_, (c, name))| {
-            format!(
-                "module \"{name}\" is defined in {c} groups; single-.ahk output would merge them"
-            )
-        })
-        .collect()
 }

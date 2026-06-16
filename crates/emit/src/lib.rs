@@ -25,13 +25,13 @@ use patch::{apply_edits, Edit};
 
 /// Emit a single self-contained `.ahk` bundle: the entry group's source, then each imported
 /// group wrapped in a `#Module Name` block. Every resolved `#Import` is rewritten to name the
-/// in-file module instead of a file/path, so the bundle resolves entirely in-process
-/// (in-file modules take precedence over the filesystem).
+/// in-file module instead of a file/path, and every module is given a program-unique name
+/// (renaming colliding sub-modules), so the bundle resolves entirely in-process and no two
+/// distinct modules merge (in-file modules take precedence over the filesystem).
 ///
 /// Pass a [`ShakeResult`] to also delete dead declarations and unused imports and omit
-/// fully-dead groups; pass `None` for a byte-faithful bundle. It does *not* yet rename
-/// same-name modules that collide once merged into one file (the linker warns), strip
-/// comments, or fold constants — future [`Edit`] producers over the same per-group text.
+/// fully-dead groups; pass `None` for a byte-faithful bundle. It does *not* yet strip
+/// comments or fold constants — future [`Edit`] producers over the same per-group text.
 pub fn emit_ahk(program: &Program, plan: &BundlePlan, shake: Option<&ShakeResult>) -> String {
     // Imports the shaker dropped must not also be rewritten — they're being deleted.
     let dropped: HashSet<NodeId> = shake
@@ -42,12 +42,13 @@ pub fn emit_ahk(program: &Program, plan: &BundlePlan, shake: Option<&ShakeResult
         .unwrap_or_default();
 
     let mut edits = import_edits(program, plan, &dropped);
+    add_rename_edits(program, plan, &mut edits);
     if let Some(s) = shake {
         add_deletion_edits(program, s, &mut edits);
     }
 
     let mut out = String::new();
-    for unit in &plan.units {
+    for (i, unit) in plan.units.iter().enumerate() {
         // A group whose every module is dead is omitted entirely (its importer's `#Import`
         // is in `dropped_imports`, so nothing dangles).
         if dead_groups.contains(&unit.group) {
@@ -58,7 +59,18 @@ pub fn emit_ahk(program: &Program, plan: &BundlePlan, shake: Option<&ShakeResult
         let group_edits = edits.get(&unit.group).map(Vec::as_slice).unwrap_or(&[]);
         let text = apply_edits(&file.text, file.base, group_edits);
 
-        match &unit.module_name {
+        // The entry group's primary module stays the implicit `__Main` (no header). Every
+        // imported group's primary needs a synthesized `#Module Name` header before its text;
+        // any in-source `#Module` sub-modules are already in `text`, renamed in place.
+        let header = if i == 0 {
+            None
+        } else {
+            group
+                .modules
+                .first()
+                .and_then(|m| plan.module_names.get(&(unit.group, *m)))
+        };
+        match header {
             None => out.push_str(&text),
             Some(name) => {
                 // Blank-line separation, then the module header on its own line.
@@ -76,6 +88,34 @@ pub fn emit_ahk(program: &Program, plan: &BundlePlan, shake: Option<&ShakeResult
         }
     }
     out
+}
+
+/// Rename each written `#Module` directive whose assigned output name differs from its source
+/// text, so colliding sub-module names across groups stay distinct in the flat output. Keyed
+/// by the module's own group (the edit lands in that group's text).
+fn add_rename_edits(program: &Program, plan: &BundlePlan, edits: &mut HashMap<GroupId, Vec<Edit>>) {
+    for group in &program.groups {
+        for &mid in &group.modules {
+            let NodeKind::Module(module) = &program.arena[mid].kind else {
+                continue;
+            };
+            // Only written `#Module Name` directives have a name span to rewrite (the implicit
+            // `__Main` primary has none).
+            let Some(span) = module.name_span else {
+                continue;
+            };
+            let Some(name) = plan.module_names.get(&(group.id, mid)) else {
+                continue;
+            };
+            if program.span_text(span) == name {
+                continue;
+            }
+            edits
+                .entry(group.id)
+                .or_default()
+                .push(Edit::new(span, name));
+        }
+    }
 }
 
 /// Groups whose every module the shaker marked dead — omit the whole unit.
@@ -117,12 +157,6 @@ fn import_edits(
     plan: &BundlePlan,
     dropped: &HashSet<NodeId>,
 ) -> HashMap<GroupId, Vec<Edit>> {
-    // group -> assigned module name (only non-entry groups have one).
-    let name_by_group: HashMap<GroupId, &str> = plan
-        .units
-        .iter()
-        .filter_map(|u| u.module_name.as_deref().map(|n| (u.group, n)))
-        .collect();
     // file -> group (the layout is one file per group today, so this is 1:1).
     let group_by_file: HashMap<FileId, GroupId> =
         program.groups.iter().map(|g| (g.file, g.id)).collect();
@@ -132,9 +166,11 @@ fn import_edits(
         if dropped.contains(&ri.node) {
             continue;
         }
-        let Some(&target) = name_by_group.get(&ri.group) else {
+        // The output name of the specific target module this import resolves to.
+        let Some(target) = plan.module_names.get(&(ri.group, ri.module)) else {
             continue;
         };
+        let target = target.as_str();
         // The span of the import's source spec — a bare name or a quoted path/string.
         let NodeKind::ImportDirective(directive) = &program.arena[ri.node].kind else {
             continue;
