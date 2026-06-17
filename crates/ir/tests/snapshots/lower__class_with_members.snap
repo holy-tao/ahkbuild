@@ -30,7 +30,7 @@ Module "__Main" (implicit) [0, 247]
             object: Identifier "this" [219, 223]
             member: Identifier "_name" [224, 229]
           right: Identifier "value" [233, 238]
-    method: Function "Move" [99, 166]
+    method: Function "Move" [104, 166]
       param: "dx"
       param: "dy"
       body: Block (2 stmts) [116, 166]
