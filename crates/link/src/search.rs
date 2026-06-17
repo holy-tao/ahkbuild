@@ -88,10 +88,80 @@ impl Builtins {
         } else if name.eq_ignore_ascii_case("A_AhkPath") {
             self.ahk_path.clone()?
         } else {
-            return None;
+            return env_builtin(name);
         };
         Some(path.to_string_lossy().into_owned())
     }
+
+    /// Expand built-in variables in a `#Include` path. Like [`expand`](Self::expand) but also
+    /// resolves `%A_LineFile%` to `line_file` (the full path of the file containing the
+    /// directive), which is per-directive and so not part of the fixed search-path expansion.
+    pub fn expand_include(&self, value: &str, line_file: &Path) -> String {
+        let line_file = line_file.to_string_lossy();
+        let mut out = String::with_capacity(value.len());
+        let mut rest = value;
+        while let Some(open) = rest.find('%') {
+            out.push_str(&rest[..open]);
+            let after = &rest[open + 1..];
+            match after.find('%') {
+                Some(close) => {
+                    let name = &after[..close];
+                    if name.eq_ignore_ascii_case("A_LineFile") {
+                        out.push_str(&line_file);
+                    } else {
+                        // Defer everything else to `expand`'s known-builtins handling.
+                        out.push('%');
+                        out.push_str(name);
+                        out.push('%');
+                    }
+                    rest = &after[close + 1..];
+                }
+                None => {
+                    out.push('%');
+                    out.push_str(after);
+                    rest = "";
+                }
+            }
+        }
+        out.push_str(rest);
+        self.expand(&out)
+    }
+
+    /// The `<LibName>` library search directories, in order: local (`<ScriptDir>\Lib`), user
+    /// (`<MyDocuments>\AutoHotkey\Lib`), and — if `A_AhkPath` is known — standard
+    /// (`<AhkDir>\Lib`).
+    pub fn lib_dirs(&self) -> Vec<PathBuf> {
+        let mut dirs = vec![
+            self.script_dir.join("Lib"),
+            self.my_documents.join("AutoHotkey").join("Lib"),
+        ];
+        if let Some(parent) = self.ahk_path.as_ref().and_then(|p| p.parent()) {
+            dirs.push(parent.join("Lib"));
+        }
+        dirs
+    }
+}
+
+/// Resolve the remaining environment-backed `A_*` built-ins usable in a `#Include` path.
+/// Returns `None` when the backing environment variable is unset, so the `%A_…%` is kept
+/// literal (and the include then fails to resolve, with a warning).
+fn env_builtin(name: &str) -> Option<String> {
+    let var = if name.eq_ignore_ascii_case("A_AppData") {
+        "APPDATA"
+    } else if name.eq_ignore_ascii_case("A_AppDataCommon") {
+        "ALLUSERSPROFILE"
+    } else if name.eq_ignore_ascii_case("A_Temp") {
+        "TEMP"
+    } else if name.eq_ignore_ascii_case("A_WinDir") {
+        "WINDIR"
+    } else if name.eq_ignore_ascii_case("A_ComSpec") {
+        "ComSpec"
+    } else if name.eq_ignore_ascii_case("A_ProgramFiles") {
+        "ProgramFiles"
+    } else {
+        return None;
+    };
+    std::env::var(var).ok()
 }
 
 /// The resolved, fixed search directories (those after the per-import importer dir).

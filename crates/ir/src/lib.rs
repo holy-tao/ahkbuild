@@ -16,7 +16,7 @@ pub use ahkbuild_syntax::{FileId, SourceFile, SourceMap, Span};
 
 pub use arena::{Arena, Node, NodeId};
 pub use children::{child_ids, children};
-pub use lower::{lower, ImportSpec, Lowering};
+pub use lower::{lower, ImportSpec, IncludeSplices, Lowering};
 pub use node::NodeKind;
 pub use print::print_program;
 pub use program::{Group, GroupId, Program};
@@ -186,6 +186,36 @@ mod tests {
         // And the file origin is recorded.
         assert_eq!(p.groups[1].file, p.sources.file(p.groups[1].file).id);
         assert_eq!(p.sources.file(p.groups[1].file).name, "GroupB.ahk");
+    }
+
+    #[test]
+    fn include_splices_lowered_nodes_into_the_module() {
+        // Pre-load the included file, then lower the entry with a splice for its `#Include` at
+        // offset 0. The included function must land in __Main with a span slicing *its* file.
+        let mut lw = Lowering::new();
+        let (inc, _) = lw.load("inc.ahk", "IncFn() {\n  return 1\n}\n").unwrap();
+        let (main, _) = lw.load("main.ahk", "#Include inc.ahk\nMainFn() {\n  return 2\n}\n").unwrap();
+
+        let mut splices = IncludeSplices::new();
+        splices.insert((main, 0), inc);
+        let gid = lw.lower_group(main, &splices).unwrap();
+        let p = lw.finish();
+
+        // One group (includes don't fork groups); body = include directive, spliced IncFn, MainFn.
+        assert_eq!(p.groups.len(), 1);
+        let NodeKind::Module(m) = &p.arena[p.groups[gid.0 as usize].modules[0]].kind else {
+            panic!("expected module");
+        };
+        assert!(matches!(p.arena[m.body[0]].kind, NodeKind::IncludeDirective(_)));
+        let NodeKind::Function(inc_fn) = &p.arena[m.body[1]].kind else {
+            panic!("expected spliced function, got {:?}", p.arena[m.body[1]].kind);
+        };
+        // The spliced node's span slices the included file, not the entry file.
+        assert_eq!(inc_fn.name.map(|s| p.span_text(s)), Some("IncFn"));
+        let NodeKind::Function(main_fn) = &p.arena[m.body[2]].kind else {
+            panic!("expected main function");
+        };
+        assert_eq!(main_fn.name.map(|s| p.span_text(s)), Some("MainFn"));
     }
 
     #[test]

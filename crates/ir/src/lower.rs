@@ -11,11 +11,20 @@
 use std::collections::HashMap;
 
 use ahkbuild_syntax::tree_sitter::{Node, Tree};
-use ahkbuild_syntax::{SourceMap, Span};
+use ahkbuild_syntax::{FileId, SourceMap, Span};
 
 use crate::arena::{Arena, NodeId};
 use crate::node::*;
 use crate::program::{Group, GroupId, Program};
+
+/// Which `#Include` directives should splice an included file's content into the IR, keyed by
+/// `(including file, directive start offset within that file)` -> the included [`FileId`].
+///
+/// The linker resolves the include graph (IO) and fills this in before lowering; lowering then
+/// pastes each named file's top-level statements into the surrounding module. A directive with
+/// no entry here (an unresolved `*i` include, a deduped repeat, or a `#Include Dir`) lowers to
+/// a bare [`IncludeDirective`](NodeKind::IncludeDirective) with no spliced content.
+pub type IncludeSplices = HashMap<(FileId, u32), FileId>;
 
 /// Lower a single already-parsed file into an owned [`Program`] (one entry group).
 ///
@@ -45,31 +54,56 @@ impl Lowering {
         Lowering::default()
     }
 
-    /// Parse `text` and lower it as a new group. Returns `None` if the parser yields no
-    /// tree. The text is moved into the [`SourceMap`].
+    /// Add a file's `text` to the [`SourceMap`] and parse it *without* lowering. Returns the
+    /// new [`FileId`] and its parse tree, or `None` if the parser yields no tree. The linker
+    /// uses this to load a file (and walk it for `#Include`s) before lowering its group.
+    pub fn load(
+        &mut self,
+        name: impl Into<String>,
+        text: impl Into<String>,
+    ) -> Option<(FileId, Tree)> {
+        let file = self.sources.add(name, text);
+        let tree = ahkbuild_syntax::parse(&self.sources.file(file).text)?;
+        Some((file, tree))
+    }
+
+    /// Lower an already-loaded `file` (see [`load`](Self::load)) as a new group, splicing in
+    /// each `#Include`d file named by `splices`. The included files must already be in the
+    /// source map. Returns `None` if `file` fails to parse.
+    pub fn lower_group(&mut self, file: FileId, splices: &IncludeSplices) -> Option<GroupId> {
+        let base = self.sources.base(file);
+        let tree = ahkbuild_syntax::parse(&self.sources.file(file).text)?;
+        let modules = {
+            let src: &str = &self.sources.file(file).text;
+            lower_group_into(
+                &mut self.arena,
+                &mut self.directives,
+                &self.sources,
+                splices,
+                file,
+                base,
+                src,
+                tree.root_node(),
+            )
+        };
+        let id = GroupId(self.groups.len() as u32);
+        self.groups.push(Group { id, file, modules });
+        Some(id)
+    }
+
+    /// Parse `text` and lower it as a new group with no `#Include` resolution. Returns `None`
+    /// if the parser yields no tree. The text is moved into the [`SourceMap`].
     pub fn add_file(
         &mut self,
         name: impl Into<String>,
         text: impl Into<String>,
     ) -> Option<GroupId> {
         let file = self.sources.add(name, text);
-        let base = self.sources.base(file);
-        let src: &str = &self.sources.file(file).text;
-        let tree = ahkbuild_syntax::parse(src)?;
-        let modules = lower_into(
-            &mut self.arena,
-            &mut self.directives,
-            src,
-            base,
-            tree.root_node(),
-        );
-        let id = GroupId(self.groups.len() as u32);
-        self.groups.push(Group { id, file, modules });
-        Some(id)
+        self.lower_group(file, &IncludeSplices::new())
     }
 
-    /// Lower a file whose `tree` is already parsed (from the same bytes as `text`). The
-    /// text is moved into the [`SourceMap`].
+    /// Lower a file whose `tree` is already parsed (from the same bytes as `text`), as a new
+    /// group with no `#Include` resolution. The text is moved into the [`SourceMap`].
     pub fn add_parsed(
         &mut self,
         name: impl Into<String>,
@@ -78,14 +112,20 @@ impl Lowering {
     ) -> GroupId {
         let file = self.sources.add(name, text);
         let base = self.sources.base(file);
-        let src: &str = &self.sources.file(file).text;
-        let modules = lower_into(
-            &mut self.arena,
-            &mut self.directives,
-            src,
-            base,
-            tree.root_node(),
-        );
+        let empty = IncludeSplices::new();
+        let modules = {
+            let src: &str = &self.sources.file(file).text;
+            lower_group_into(
+                &mut self.arena,
+                &mut self.directives,
+                &self.sources,
+                &empty,
+                file,
+                base,
+                src,
+                tree.root_node(),
+            )
+        };
         let id = GroupId(self.groups.len() as u32);
         self.groups.push(Group { id, file, modules });
         id
@@ -150,6 +190,27 @@ impl Lowering {
         }
         out
     }
+
+    /// The `IncludeDirective` nodes in a group's module bodies, in source order (a group's
+    /// own directives plus those of any files spliced into it). The linker joins these against
+    /// its include resolution to build the backend-neutral `resolved_includes`.
+    pub fn group_includes(&self, gid: GroupId) -> Vec<NodeId> {
+        let mut out = Vec::new();
+        let Some(group) = self.groups.get(gid.0 as usize) else {
+            return out;
+        };
+        for &m in &group.modules {
+            let NodeKind::Module(module) = &self.arena[m].kind else {
+                continue;
+            };
+            for &stmt in &module.body {
+                if matches!(self.arena[stmt].kind, NodeKind::IncludeDirective(_)) {
+                    out.push(stmt);
+                }
+            }
+        }
+        out
+    }
 }
 
 /// A single `#Import` target found in a group, for the linker to resolve.
@@ -176,21 +237,29 @@ fn unquote(s: &str) -> String {
     }
 }
 
-/// Lower one file's tree, appending nodes to a shared arena; returns the file's modules.
-/// A free function (not a `&mut self` method) so it can borrow the [`Lowering`] fields as
-/// disjoint pieces while `source` still borrows the source map.
-fn lower_into(
-    arena: &mut Arena,
-    directives: &mut HashMap<NodeId, Vec<DirectiveComment>>,
-    source: &str,
+/// Lower one group's entry tree, appending nodes to a shared arena and splicing in any
+/// `#Include`d files named by `splices`; returns the group's modules. A free function (not a
+/// `&mut self` method) so it can borrow the [`Lowering`] fields as disjoint pieces while
+/// `source`/`sources` still borrow the source map.
+#[allow(clippy::too_many_arguments)]
+fn lower_group_into<'a>(
+    arena: &'a mut Arena,
+    directives: &'a mut HashMap<NodeId, Vec<DirectiveComment>>,
+    sources: &'a SourceMap,
+    splices: &'a IncludeSplices,
+    file: FileId,
     base: u32,
+    source: &'a str,
     root: Node,
 ) -> Vec<NodeId> {
     let mut l = Lowerer {
         arena,
         directives,
-        source,
+        sources,
+        splices,
+        file,
         base,
+        source,
     };
     let (modules, _main) = l.build_top_level(root);
     modules
@@ -199,10 +268,26 @@ fn lower_into(
 struct Lowerer<'a> {
     arena: &'a mut Arena,
     directives: &'a mut HashMap<NodeId, Vec<DirectiveComment>>,
-    /// This file's own text (file-relative). Combined with `base` to slice global spans.
-    source: &'a str,
-    /// This file's start offset in the [`SourceMap`] global position space.
+    /// Every source behind the program, for slicing files spliced in via `#Include`.
+    sources: &'a SourceMap,
+    /// Which `#Include` directives to splice (see [`IncludeSplices`]).
+    splices: &'a IncludeSplices,
+    /// The file currently being walked — swapped while splicing an included file so spliced
+    /// nodes carry spans into *their* file.
+    file: FileId,
+    /// `file`'s start offset in the [`SourceMap`] global position space.
     base: u32,
+    /// `file`'s own text (file-relative). Combined with `base` to slice global spans.
+    source: &'a str,
+}
+
+/// Shared state threaded through [`Lowerer::walk_top_level`] so an `#Include`d file's
+/// statements (and any `#Module` it opens) join the includer's modules, as a paste would.
+struct TopLevel {
+    modules: Vec<NodeId>,
+    by_name: HashMap<String, NodeId>,
+    current: NodeId,
+    pending: Vec<DirectiveComment>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -224,51 +309,86 @@ impl<'a> Lowerer<'a> {
                 body: Vec::new(),
             }),
         );
-        let mut modules = vec![main];
-        let mut by_name: HashMap<String, NodeId> = HashMap::new();
-        by_name.insert(Module::MAIN.to_ascii_lowercase(), main);
+        let mut st = TopLevel {
+            modules: vec![main],
+            by_name: HashMap::from([(Module::MAIN.to_ascii_lowercase(), main)]),
+            current: main,
+            pending: Vec::new(),
+        };
+        self.walk_top_level(root, &mut st);
+        self.warn_trailing(&st.pending);
+        (st.modules, main)
+    }
 
-        let mut current = main;
-        let mut pending: Vec<DirectiveComment> = Vec::new();
-
+    /// Walk one file's top-level statements into the shared module-grouping `st`. Called
+    /// re-entrantly by [`Self::maybe_splice`] for `#Include`d files.
+    fn walk_top_level(&mut self, root: Node, st: &mut TopLevel) {
         let mut cursor = root.walk();
         for child in root.named_children(&mut cursor) {
             match child.kind() {
                 "directive_comment" => {
-                    pending.push(self.parse_directive_comment(child));
+                    st.pending.push(self.parse_directive_comment(child));
                 }
-                "module_directive" => {
-                    let ident = child.named_child(0);
-                    let name = ident
-                        .map(|n| n.span_text(self.source).trim().to_string())
-                        .unwrap_or_default();
-                    let key = name.to_ascii_lowercase();
-                    current = if let Some(&existing) = by_name.get(&key) {
-                        existing
-                    } else {
-                        let child_span = self.span(child);
-                        let id = self.arena.alloc(
-                            child_span,
-                            NodeKind::Module(Module {
-                                name,
-                                name_span: ident.map(|n| self.name_of(n)),
-                                body: Vec::new(),
-                            }),
-                        );
-                        modules.push(id);
-                        by_name.insert(key, id);
-                        id
-                    };
-                }
+                "module_directive" => self.open_module(child, st),
                 _ => {
                     let id = self.build_node(child);
-                    self.attach_directives(id, &mut pending);
-                    self.push_to_module(current, id);
+                    self.attach_directives(id, &mut st.pending);
+                    self.push_to_module(st.current, id);
+                    if matches!(child.kind(), "include_directive" | "include_again_directive") {
+                        self.maybe_splice(child, st);
+                    }
                 }
             }
         }
-        self.warn_trailing(&pending);
-        (modules, main)
+    }
+
+    /// Open (or reopen) the module named by a `#Module` directive, updating `st.current`.
+    fn open_module(&mut self, child: Node, st: &mut TopLevel) {
+        let ident = child.named_child(0);
+        let name = ident
+            .map(|n| n.span_text(self.source).trim().to_string())
+            .unwrap_or_default();
+        let key = name.to_ascii_lowercase();
+        st.current = if let Some(&existing) = st.by_name.get(&key) {
+            existing
+        } else {
+            let child_span = self.span(child);
+            let id = self.arena.alloc(
+                child_span,
+                NodeKind::Module(Module {
+                    name,
+                    name_span: ident.map(|n| self.name_of(n)),
+                    body: Vec::new(),
+                }),
+            );
+            st.modules.push(id);
+            st.by_name.insert(key, id);
+            id
+        };
+    }
+
+    /// If `directive` (an `#Include`/`#IncludeAgain` node in the current file) is marked to
+    /// splice, paste the included file's top-level statements into `st`, switching the file
+    /// context for the duration so spliced nodes carry spans into the included file.
+    fn maybe_splice(&mut self, directive: Node, st: &mut TopLevel) {
+        let off = directive.start_byte() as u32;
+        let Some(&inc) = self.splices.get(&(self.file, off)) else {
+            return;
+        };
+        let sources = self.sources;
+        let text = sources.file(inc).text.as_str();
+        let base = sources.base(inc);
+        let Some(tree) = ahkbuild_syntax::parse(text) else {
+            return;
+        };
+        let (prev_file, prev_base, prev_source) = (self.file, self.base, self.source);
+        self.file = inc;
+        self.base = base;
+        self.source = text;
+        self.walk_top_level(tree.root_node(), st);
+        self.file = prev_file;
+        self.base = prev_base;
+        self.source = prev_source;
     }
 
     fn push_to_module(&mut self, module: NodeId, child: NodeId) {
@@ -325,6 +445,7 @@ impl<'a> Lowerer<'a> {
             "variable_declaration" => self.build_var_decl(node),
             "export_declaration" => self.build_export(node),
             "import_directive" => self.build_import(node),
+            "include_directive" | "include_again_directive" => self.build_include(node),
 
             // Binary expressions
             "additive_operation"
@@ -872,6 +993,27 @@ impl<'a> Lowerer<'a> {
                 source,
                 binding,
                 reexport,
+            }),
+        )
+    }
+
+    fn build_include(&mut self, node: Node) -> NodeId {
+        let again = node.kind() == "include_again_directive";
+        let ignore_missing = self.has_named_child(node, "include_ignore_failure");
+        let (path, is_lib) = if let Some(p) = self.named_child_of_kind(node, "lib_name") {
+            (self.name_of(p), true)
+        } else if let Some(p) = self.named_child_of_kind(node, "file_or_dir_name") {
+            (self.name_of(p), false)
+        } else {
+            (self.name_of(node), false)
+        };
+        self.alloc(
+            node,
+            NodeKind::IncludeDirective(Include {
+                path,
+                again,
+                ignore_missing,
+                is_lib,
             }),
         )
     }

@@ -156,3 +156,61 @@ fn submodule_colliding_with_group_name_is_renamed_and_redirected() {
     assert!(ahk.contains("#Import Foo\n"), "{ahk}");
     assert!(ahk.contains("#Import Foo_2 as BF"), "{ahk}");
 }
+
+#[test]
+fn include_is_spliced_inline() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(
+        tmp.path(),
+        "main.ahk",
+        "Before()\n#Include lib.ahk\nAfter()\n",
+    );
+    write(tmp.path(), "lib.ahk", "LibFn() {\n    return 7\n}\n");
+
+    let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
+    let ahk = ahkbuild_emit::emit_ahk(&out.program, &out.plan, None);
+
+    // The directive is replaced by the included file's text, in place between Before and After.
+    assert!(!ahk.contains("#Include"), "directive should be spliced away: {ahk}");
+    assert!(ahk.contains("LibFn()"), "{ahk}");
+    let before = ahk.find("Before()").unwrap();
+    let lib = ahk.find("LibFn()").unwrap();
+    let after = ahk.find("After()").unwrap();
+    assert!(before < lib && lib < after, "splice out of order: {ahk}");
+    // No extra module wrapping — includes stay in the entry group.
+    assert!(!ahk.contains("#Module"), "{ahk}");
+}
+
+#[test]
+fn duplicate_include_is_emitted_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(
+        tmp.path(),
+        "main.ahk",
+        "#Include util.ahk\n#Include util.ahk\n",
+    );
+    write(tmp.path(), "util.ahk", "UtilFn() {\n    return 1\n}\n");
+
+    let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
+    let ahk = ahkbuild_emit::emit_ahk(&out.program, &out.plan, None);
+
+    // First include splices the body; the deduped repeat emits nothing.
+    assert_eq!(ahk.matches("UtilFn()").count(), 1, "{ahk}");
+}
+
+#[test]
+fn include_again_is_emitted_each_time() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(
+        tmp.path(),
+        "main.ahk",
+        "#Include util.ahk\n#IncludeAgain util.ahk\n",
+    );
+    write(tmp.path(), "util.ahk", "UtilFn() {\n    return 1\n}\n");
+
+    let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
+    let ahk = ahkbuild_emit::emit_ahk(&out.program, &out.plan, None);
+
+    // #IncludeAgain pastes the content a second time.
+    assert_eq!(ahk.matches("UtilFn()").count(), 2, "{ahk}");
+}

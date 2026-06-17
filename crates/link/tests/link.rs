@@ -214,3 +214,131 @@ fn embedded_resource_import_is_skipped() {
     assert_eq!(out.program.groups.len(), 1);
     assert!(out.warnings.is_empty(), "{:?}", out.warnings);
 }
+
+// ----------------------------------------------------------------------------------------
+// #Include
+// ----------------------------------------------------------------------------------------
+
+use ahkbuild_link::IncludeSplice;
+
+/// Names of every identifier-bearing declaration reachable from the entry group's modules, by
+/// walking the IR — used to confirm `#Include`d declarations were spliced into the group.
+fn entry_decl_names(p: &ahkbuild_ir::Program) -> Vec<String> {
+    let mut out = Vec::new();
+    for &m in &p.groups[0].modules {
+        let NodeKind::Module(module) = &p.arena[m].kind else {
+            continue;
+        };
+        for &stmt in &module.body {
+            if let NodeKind::Function(f) = &p.arena[stmt].kind {
+                if let Some(n) = f.name {
+                    out.push(p.span_text(n).to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn include_splices_into_one_group_transitively() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(
+        tmp.path(),
+        "main.ahk",
+        "#Include lib.ahk\nMainFn() {\n  return 1\n}\n",
+    );
+    write(
+        tmp.path(),
+        "lib.ahk",
+        "#Include deep.ahk\nLibFn() {\n  return 2\n}\n",
+    );
+    write(tmp.path(), "deep.ahk", "DeepFn() {\n  return 3\n}\n");
+
+    let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
+    // #Include does not create groups: everything is in the entry group.
+    assert_eq!(out.program.groups.len(), 1, "includes stay in one group");
+    assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+
+    let names = entry_decl_names(&out.program);
+    for want in ["MainFn", "LibFn", "DeepFn"] {
+        assert!(names.contains(&want.to_string()), "missing {want} in {names:?}");
+    }
+
+    // Two First splices recorded (main->lib, lib->deep), none deduped/missing.
+    let firsts = out
+        .plan
+        .resolved_includes
+        .iter()
+        .filter(|ri| matches!(ri.splice, IncludeSplice::First(_)))
+        .count();
+    assert_eq!(firsts, 2, "{:?}", out.plan.resolved_includes);
+}
+
+#[test]
+fn include_dedup_and_again() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(
+        tmp.path(),
+        "main.ahk",
+        "#Include util.ahk\n#Include util.ahk\n#IncludeAgain util.ahk\n",
+    );
+    write(tmp.path(), "util.ahk", "UtilFn() {\n  return 1\n}\n");
+
+    let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
+    assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+
+    let mut firsts = 0;
+    let mut dedups = 0;
+    for ri in &out.plan.resolved_includes {
+        match ri.splice {
+            IncludeSplice::First(_) => firsts += 1,
+            IncludeSplice::Dedup => dedups += 1,
+            IncludeSplice::Missing => {}
+        }
+    }
+    // First plain include splices; the second is deduped; #IncludeAgain splices again.
+    assert_eq!((firsts, dedups), (2, 1), "{:?}", out.plan.resolved_includes);
+}
+
+#[test]
+fn include_missing_with_star_i_is_a_warning() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(tmp.path(), "main.ahk", "#Include *i nope.ahk\nX := 1\n");
+
+    let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
+    assert_eq!(out.warnings.len(), 1, "one ignored-missing warning");
+    assert!(out
+        .plan
+        .resolved_includes
+        .iter()
+        .any(|ri| matches!(ri.splice, IncludeSplice::Missing)));
+}
+
+#[test]
+fn include_missing_without_star_i_is_an_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(tmp.path(), "main.ahk", "#Include nope.ahk\n");
+    assert!(link_entry(&main, &SearchPath::from_dirs([])).is_err());
+}
+
+#[test]
+fn include_cycle_is_an_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(tmp.path(), "main.ahk", "#IncludeAgain b.ahk\n");
+    write(tmp.path(), "b.ahk", "#IncludeAgain main.ahk\n");
+    assert!(link_entry(&main, &SearchPath::from_dirs([])).is_err());
+}
+
+#[test]
+fn include_lib_resolves_with_underscore_fallback() {
+    let tmp = tempfile::tempdir().unwrap();
+    // `<MyPrefix_Func>` is not found directly; the prefix file `MyPrefix.ahk` in the local
+    // Lib folder is the fallback.
+    let main = write(tmp.path(), "main.ahk", "#Include <MyPrefix_Func>\n");
+    write(tmp.path(), "Lib/MyPrefix.ahk", "PrefixFn() {\n  return 1\n}\n");
+
+    let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
+    assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+    assert!(entry_decl_names(&out.program).contains(&"PrefixFn".to_string()));
+}

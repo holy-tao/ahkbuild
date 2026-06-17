@@ -80,6 +80,17 @@ impl Printer<'_> {
                 if m.is_main() { " (implicit)" } else { "" }
             ),
             NodeKind::ImportDirective(d) => format!("ImportDirective {}", self.import_summary(d)),
+            NodeKind::IncludeDirective(i) => {
+                let mut s = String::from("IncludeDirective");
+                if i.again {
+                    s.push_str(" again");
+                }
+                if i.ignore_missing {
+                    s.push_str(" *i");
+                }
+                let _ = write!(s, " {}", prog.span_text(i.path).trim());
+                s
+            }
             NodeKind::ExportDecl { default, .. } => {
                 format!("ExportDecl{}", if *default { " default" } else { "" })
             }
@@ -226,6 +237,7 @@ impl Printer<'_> {
             NodeKind::Opaque => {}
             NodeKind::Module(m) => self.list("", &m.body, depth),
             NodeKind::ImportDirective(_) => {}
+            NodeKind::IncludeDirective(_) => {}
             NodeKind::ExportDecl { decl, .. } => self.emit("decl", *decl, depth),
             NodeKind::Function(f) => {
                 self.params(&f.params, depth);

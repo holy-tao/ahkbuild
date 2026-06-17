@@ -6,9 +6,11 @@
 //! (import rewriting, the `.ahk` / `.exe` emitters) consume the [`Program`] it produces.
 
 mod bundle;
+mod include;
 mod search;
 
-pub use bundle::{BundlePlan, BundleUnit, ResolvedImport};
+pub use bundle::{BundlePlan, BundleUnit, IncludeSplice, ResolvedImport, ResolvedInclude};
+pub use include::IncludeReport;
 pub use search::{Builtins, SearchPath};
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -60,9 +62,14 @@ pub fn link_entry(entry: &Path, search: &SearchPath) -> Result<LinkOutput> {
     let mut group_paths: Vec<PathBuf> = Vec::new();
     // Each `#Import` directive's resolution intent, finished after lowering completes.
     let mut resolutions: Vec<Resolution> = Vec::new();
+    // Every `#Include` outcome, merged across groups (keys are globally-unique `(FileId, off)`).
+    let mut include_outcomes: HashMap<(ahkbuild_ir::FileId, u32), IncludeSplice> = HashMap::new();
     let mut queue: VecDeque<PathBuf> = VecDeque::new();
 
     let entry = canonical(entry).with_context(|| format!("entry script {}", entry.display()))?;
+    // Built-ins for `#Include` resolution (`<Lib>` dirs, `%A_…%` expansion). The interpreter is
+    // not running, so `A_ScriptDir` is the entry's directory and `A_AhkPath` is unknown.
+    let builtins = Builtins::detect(entry.parent().unwrap_or_else(|| Path::new(".")).to_path_buf());
     queue.push_back(entry);
 
     while let Some(path) = queue.pop_front() {
@@ -71,8 +78,18 @@ pub fn link_entry(entry: &Path, search: &SearchPath) -> Result<LinkOutput> {
         }
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
+        // Load + parse the file, resolve its `#Include` graph (loading included files into the
+        // shared source map), then lower the group splicing those files in.
+        let (entry_file, entry_tree) = lowering
+            .load(path.to_string_lossy().into_owned(), text.clone())
+            .ok_or_else(|| anyhow!("parser returned no tree for {}", path.display()))?;
+        let report =
+            include::resolve_includes(&mut lowering, &builtins, entry_file, &path, &text, &entry_tree)?;
+        let splices = report.splices();
+        include_outcomes.extend(report.outcomes);
+        warnings.extend(report.warnings);
         let gid = lowering
-            .add_file(path.to_string_lossy().into_owned(), text)
+            .lower_group(entry_file, &splices)
             .ok_or_else(|| anyhow!("parser returned no tree for {}", path.display()))?;
         loaded.insert(path.clone(), gid);
         group_paths.push(path.clone());
@@ -203,6 +220,23 @@ pub fn link_entry(entry: &Path, search: &SearchPath) -> Result<LinkOutput> {
         }
     }
 
+    // Join each lowered `IncludeDirective` node to its resolution outcome. The directive's span
+    // start, minus its file's base, is the file-relative offset the resolver keyed on.
+    let mut resolved_includes = Vec::new();
+    for (node_id, node) in program.arena.iter() {
+        if !matches!(node.kind, NodeKind::IncludeDirective(_)) {
+            continue;
+        }
+        let file = program.sources.file_at(node.span.start);
+        let off = node.span.start - file.base;
+        if let Some(&splice) = include_outcomes.get(&(file.id, off)) {
+            resolved_includes.push(ResolvedInclude {
+                node: node_id,
+                splice,
+            });
+        }
+    }
+
     let module_names = assign_module_names(&program, &group_paths);
     let units = program
         .groups
@@ -216,6 +250,7 @@ pub fn link_entry(entry: &Path, search: &SearchPath) -> Result<LinkOutput> {
             units,
             resolved_imports,
             module_names,
+            resolved_includes,
         },
         warnings,
     })

@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 
-use ahkbuild_ir::{GroupId, NodeId};
+use ahkbuild_ir::{FileId, GroupId, NodeId};
 
 /// An ordered, backend-neutral description of how groups become output modules.
 #[derive(Clone, Debug)]
@@ -28,6 +28,12 @@ pub struct BundlePlan {
     /// resource name) so the flat single-`.ahk` output never merges two distinct modules. The
     /// entry group's primary module keeps `"__Main"` and is emitted without a header.
     pub module_names: HashMap<(GroupId, NodeId), String>,
+    /// Every `#Include` / `#IncludeAgain` directive that was resolved, and how a backend should
+    /// materialize it. The `.ahk` emitter splices the included file's text over the directive
+    /// (or deletes it for a deduped repeat); a future `.exe` emitter keeps the directive and
+    /// emits each distinct file once as a resource. Unresolved `*i` includes are `Missing` and
+    /// left untouched. A `#Include Dir` (directory) directive is not listed at all.
+    pub resolved_includes: Vec<ResolvedInclude>,
 }
 
 /// One group's placement in the bundle.
@@ -48,4 +54,24 @@ pub struct ResolvedImport {
     /// The target module node within `group` (a specific sub-module for a path-qualified or
     /// in-group import; the group's primary `__Main` for a plain file import).
     pub module: NodeId,
+}
+
+/// A resolved `#Include`: the directive node and how to materialize it.
+#[derive(Clone, Copy, Debug)]
+pub struct ResolvedInclude {
+    /// The `IncludeDirective` node (its `path` span is what a backend rewrites/replaces).
+    pub node: NodeId,
+    pub splice: IncludeSplice,
+}
+
+/// How a backend should materialize one resolved `#Include` directive.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IncludeSplice {
+    /// First inclusion of this file in its module: emit the file's content here. Carries the
+    /// included [`FileId`].
+    First(FileId),
+    /// A repeat of an already-included file (plain `#Include`, deduped): emit nothing.
+    Dedup,
+    /// An unresolved `*i` include: leave the directive as a runtime no-op.
+    Missing,
 }

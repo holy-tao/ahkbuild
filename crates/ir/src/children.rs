@@ -42,6 +42,7 @@ fn collect(kind: &NodeKind, out: &mut Vec<NodeId>) {
         NodeKind::Opaque => {}
         NodeKind::Module(m) => out.extend(m.body.iter().copied()),
         NodeKind::ImportDirective(_) => {}
+        NodeKind::IncludeDirective(_) => {}
         NodeKind::ExportDecl { decl, .. } => out.push(*decl),
         NodeKind::Function(f) => {
             push_param_defaults(&f.params, out);

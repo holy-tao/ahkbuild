@@ -30,6 +30,13 @@ pub enum NodeKind {
     Module(Module),
     /// An `#Import` directive.
     ImportDirective(ImportDirective),
+    /// A `#Include` / `#IncludeAgain` directive. Unlike `#Import`, an include pastes another
+    /// file's text into the *current* module; the directive node stays in the body at its
+    /// source position so a backend can decide how to materialize it (the `.ahk` emitter
+    /// splices the included file's text over this span; a future `.exe` emitter keeps the
+    /// directive and embeds the file as a resource). The spliced content, when resolved, is
+    /// lowered into the surrounding module right after this node.
+    IncludeDirective(Include),
     /// An `export` / `export default` declaration wrapping an inner declaration.
     ExportDecl {
         default: bool,
@@ -202,6 +209,21 @@ pub struct ImportDirective {
     /// `#Import export X` — a re-export (barrel): the imported names also become exports of
     /// the importing module, so they are part of its public surface and must not be trimmed.
     pub reexport: bool,
+}
+
+/// `#Include` / `#IncludeAgain` directive payload. The raw `path` span (which may keep its
+/// surrounding quotes and, for `is_lib`, its `<...>` brackets) is what a backend rewrites;
+/// the linker resolves it against the filesystem.
+#[derive(Clone, Debug)]
+pub struct Include {
+    /// The `file_or_dir_name` / `lib_name` text span (verbatim, including any quotes/brackets).
+    pub path: Span,
+    /// `#IncludeAgain` — paste even if the file was already included in this module.
+    pub again: bool,
+    /// The `*i` flag — a failure to resolve the file is non-fatal.
+    pub ignore_missing: bool,
+    /// `#Include <LibName>` library-include form (vs. a plain file/dir path).
+    pub is_lib: bool,
 }
 
 /// What an `#Import` resolves against: a bare module name or a quoted path/spec.
