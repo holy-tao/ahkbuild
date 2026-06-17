@@ -4,15 +4,23 @@
 //! code can reach and reports them as a [`ShakeResult`] for the emitter to delete. It never
 //! mutates the IR — like every other pass, removal is expressed as span edits at emit time.
 //!
-//! v1 works at **declaration / whole-module** granularity with conservative, name-based,
+//! It works at **declaration / whole-module** granularity with conservative, name-based,
 //! module-scoped resolution: a top-level function/class is dead if nothing references its
 //! name; an `#Import` is dropped if its bound name is never used; a module with no surviving
 //! content is removed entirely. Over-keeping is safe; under-keeping would drop live code, so
 //! anything ambiguous (dynamic references, namespace member access, wildcard imports) keeps
-//! more. Per-member pruning, the member-name table, dynamic-member extraction, reflection
-//! functions, `DefineProp` pruning, and the protected-member set are deferred to v2; live
-//! classes are kept **whole**.
+//! more.
+//!
+//! On top of that, **per-member pruning** trims a live class down to the members live code can
+//! reach: a program-wide [member-name table](members) records every member name any access
+//! could resolve to (static `obj.Foo`, dynamic `obj.Get%x%`, reflection-builtin string args),
+//! and a live class keeps only its matching (or protected, or `;@AhkBuild-Keep`-marked)
+//! members. [`defineprop`] additionally drops standalone `DefineProp("Name", …)` statements
+//! whose name nothing references. A fully-dynamic member access disables member pruning
+//! program-wide (classes kept whole).
 
+mod defineprop;
+mod members;
 mod reach;
 mod resolve;
 
@@ -21,13 +29,16 @@ use std::collections::HashSet;
 use ahkbuild_ir::{NodeId, NodeKind, Program};
 use ahkbuild_link::BundlePlan;
 
-/// What tree-shaking found to remove. All granularity is top-level: declaration statements,
-/// `#Import` directives, and whole modules. The emitter turns each into a deletion edit (and
-/// skips emitting a fully-dead group).
+/// What tree-shaking found to remove: dead declaration statements, unreferenced class members,
+/// pruned `DefineProp` calls, unused `#Import` directives, and whole modules. The emitter turns
+/// each into a deletion edit (and skips emitting a fully-dead group). Overlapping spans (a
+/// pruned member or `DefineProp` inside an already-dead class/module) are resolved by the
+/// emitter — the outer deletion wins — so listing both is harmless.
 #[derive(Debug, Default)]
 pub struct ShakeResult {
-    /// Top-level declaration statements (and, for inline dead modules, their body statements
-    /// and `#Module` header) whose spans should be deleted.
+    /// Spans to delete: top-level declaration statements (and, for inline dead modules, their
+    /// body statements and `#Module` header), plus unreferenced class members and pruned
+    /// standalone `DefineProp` calls.
     pub dead: HashSet<NodeId>,
     /// `#Import` directive nodes whose bound name is never referenced — safe to drop (the
     /// target module still auto-executes).
@@ -47,9 +58,19 @@ impl ShakeResult {
 /// Run tree-shaking over a linked program.
 pub fn shake(program: &Program, plan: &BundlePlan) -> ShakeResult {
     let resolved = resolve::resolve(program, plan);
-    let reach = reach::mark(program, &resolved);
+
+    // Build the program-wide member-name table, then prune standalone `DefineProp` calls whose
+    // property names it never matches (this also strips those calls' descriptor referencers,
+    // so a name used only inside a pruned call stops counting). Both run before marking.
+    let mut table = members::collect(program);
+    let dead_defineprops = defineprop::prune(program, &mut table);
+
+    let reach = reach::mark(program, &resolved, &table, &dead_defineprops);
 
     let mut result = ShakeResult::default();
+    // Pruned DefineProp calls and unreferenced class members are deleted by their own spans.
+    result.dead.extend(dead_defineprops);
+    result.dead.extend(reach.dead_members.iter().copied());
 
     // The entry module (main script's `__Main`) is the program; never remove it.
     let entry = program

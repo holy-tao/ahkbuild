@@ -45,6 +45,270 @@ fn names(strs: &[&str]) -> HashSet<String> {
     strs.iter().map(|s| s.to_ascii_lowercase()).collect()
 }
 
+/// The name of a dead *class member* (method/property/field), lowercased. Methods carry an
+/// `owner`, which cleanly separates them from dead top-level functions; properties and fields
+/// only ever appear as members.
+fn member_name(p: &Program, node: ahkbuild_ir::NodeId) -> Option<String> {
+    let text = |s| p.span_text(s).trim().to_ascii_lowercase();
+    match &p.arena[node].kind {
+        NodeKind::Function(f) if f.owner.is_some() => f.name.map(text),
+        NodeKind::Property(pr) => pr.name.map(text),
+        NodeKind::Field(fl) => fl.name.map(text),
+        NodeKind::TypedProperty(tp) => tp.name.map(text),
+        _ => None,
+    }
+}
+
+/// The set of pruned class-member names.
+fn dead_member_names(p: &Program, r: &ShakeResult) -> HashSet<String> {
+    r.dead.iter().filter_map(|&n| member_name(p, n)).collect()
+}
+
+/// Whether any dead node's source text contains `needle` (used to spot pruned `DefineProp`s).
+fn any_dead_text_contains(p: &Program, r: &ShakeResult, needle: &str) -> bool {
+    r.dead.iter().any(|&n| p.text(n).contains(needle))
+}
+
+// ---------------------------------------------------------------------------
+// Member-level pruning (ported from build/tests/memberpruning.test.ahk)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn unreferenced_method_is_pruned_referenced_one_kept() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(
+        tmp.path(),
+        "main.ahk",
+        "o := C()\no.Used()\n\nclass C {\n    Used() {\n    }\n    Unused() {\n    }\n}\n",
+    );
+    let (p, r) = run(&main);
+    assert_eq!(dead_member_names(&p, &r), names(&["Unused"]));
+}
+
+#[test]
+fn unreferenced_property_is_pruned() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(
+        tmp.path(),
+        "main.ahk",
+        "o := C()\nx := o.ReadIt\n\nclass C {\n    ReadIt => 1\n    Hidden => 2\n}\n",
+    );
+    let (p, r) = run(&main);
+    assert_eq!(dead_member_names(&p, &r), names(&["Hidden"]));
+}
+
+#[test]
+fn unreferenced_static_method_is_pruned() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(
+        tmp.path(),
+        "main.ahk",
+        "C.DoStatic()\n\nclass C {\n    static DoStatic() {\n    }\n    static Hidden() {\n    }\n}\n",
+    );
+    let (p, r) = run(&main);
+    assert_eq!(dead_member_names(&p, &r), names(&["Hidden"]));
+}
+
+#[test]
+fn protected_meta_members_are_never_pruned() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(
+        tmp.path(),
+        "main.ahk",
+        "o := C()\no.Used()\n\nclass C {\n    __New() {\n    }\n    __Delete() {\n    }\n    __Item[k] {\n        get => k\n    }\n    Used() {\n    }\n    Unused() {\n    }\n}\n",
+    );
+    let (p, r) = run(&main);
+    // Only the ordinary unreferenced method shakes out; the meta-members stay.
+    assert_eq!(dead_member_names(&p, &r), names(&["Unused"]));
+}
+
+#[test]
+fn keep_directive_pins_an_unreferenced_member() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(
+        tmp.path(),
+        "main.ahk",
+        "o := C()\no.Used()\n\nclass C {\n    Used() {\n    }\n    ;@AhkBuild-Keep\n    Kept() {\n    }\n    Unused() {\n    }\n}\n",
+    );
+    let (p, r) = run(&main);
+    assert_eq!(dead_member_names(&p, &r), names(&["Unused"]));
+}
+
+#[test]
+fn member_names_match_across_unrelated_classes() {
+    // The name table is global: `.Foo` anywhere keeps `Foo` in every class. `B.Foo` survives
+    // even though only `a.Foo()` is called; both `Bar`s shake out.
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(
+        tmp.path(),
+        "main.ahk",
+        "a := A()\na.Foo()\nb := B()\n\nclass A {\n    Foo() {\n    }\n    Bar() {\n    }\n}\n\nclass B {\n    Foo() {\n    }\n    Bar() {\n    }\n}\n",
+    );
+    let (p, r) = run(&main);
+    assert_eq!(dead_member_names(&p, &r), names(&["Bar"]));
+}
+
+#[test]
+fn fully_dynamic_member_access_disables_pruning() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(
+        tmp.path(),
+        "main.ahk",
+        "o := C()\nn := \"A\"\no.%n%()\n\nclass C {\n    A() {\n    }\n    B() {\n    }\n}\n",
+    );
+    let (p, r) = run(&main);
+    // The table blows up, so every member is kept.
+    assert!(
+        dead_member_names(&p, &r).is_empty(),
+        "{:?}",
+        dead_member_names(&p, &r)
+    );
+}
+
+#[test]
+fn dynamic_prefix_keeps_matching_members() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(
+        tmp.path(),
+        "main.ahk",
+        "o := C()\ns := \"Name\"\no.Get%s%()\n\nclass C {\n    GetName() {\n    }\n    GetAge() {\n    }\n    SetName() {\n    }\n}\n",
+    );
+    let (p, r) = run(&main);
+    assert_eq!(dead_member_names(&p, &r), names(&["SetName"]));
+}
+
+#[test]
+fn dynamic_suffix_keeps_matching_members() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(
+        tmp.path(),
+        "main.ahk",
+        "o := C()\nk := \"Click\"\no.%k%Handler()\n\nclass C {\n    ClickHandler() {\n    }\n    KeyHandler() {\n    }\n    Other() {\n    }\n}\n",
+    );
+    let (p, r) = run(&main);
+    assert_eq!(dead_member_names(&p, &r), names(&["Other"]));
+}
+
+#[test]
+fn dynamic_inner_string_literal_keeps_exact_member() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(
+        tmp.path(),
+        "main.ahk",
+        "o := C()\no.%\"Target\"%()\n\nclass C {\n    Target() {\n    }\n    Other() {\n    }\n}\n",
+    );
+    let (p, r) = run(&main);
+    assert_eq!(dead_member_names(&p, &r), names(&["Other"]));
+}
+
+#[test]
+fn resolves_to_directive_keeps_named_members() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(
+        tmp.path(),
+        "main.ahk",
+        "o := C()\nn := \"Alpha\"\n;@AhkBuild-ResolvesTo Alpha, Beta\no.%n%()\n\nclass C {\n    Alpha() {\n    }\n    Beta() {\n    }\n    Gamma() {\n    }\n}\n",
+    );
+    let (p, r) = run(&main);
+    assert_eq!(dead_member_names(&p, &r), names(&["Gamma"]));
+}
+
+#[test]
+fn objbindmethod_literal_keeps_named_member() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(
+        tmp.path(),
+        "main.ahk",
+        "o := C()\ncb := ObjBindMethod(o, \"Bound\")\n\nclass C {\n    Bound() {\n    }\n    Unbound() {\n    }\n}\n",
+    );
+    let (p, r) = run(&main);
+    assert_eq!(dead_member_names(&p, &r), names(&["Unbound"]));
+}
+
+#[test]
+fn objbindmethod_non_literal_disables_pruning() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(
+        tmp.path(),
+        "main.ahk",
+        "o := C()\nm := \"Bound\"\ncb := ObjBindMethod(o, m)\n\nclass C {\n    Bound() {\n    }\n    Unbound() {\n    }\n}\n",
+    );
+    let (p, r) = run(&main);
+    assert!(
+        dead_member_names(&p, &r).is_empty(),
+        "{:?}",
+        dead_member_names(&p, &r)
+    );
+}
+
+#[test]
+fn defineprop_with_unreferenced_name_is_pruned() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(
+        tmp.path(),
+        "main.ahk",
+        "o := C()\no.Used()\n\nclass C {\n    __New() {\n        this.DefineProp(\"Unused\", {Get: (*) => 1})\n    }\n    Used() {\n    }\n}\n",
+    );
+    let (p, r) = run(&main);
+    assert!(
+        any_dead_text_contains(&p, &r, "DefineProp(\"Unused\""),
+        "the DefineProp call should be pruned; dead spans: {:?}",
+        r.dead
+            .iter()
+            .map(|&n| p.text(n))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn defineprop_with_referenced_name_survives() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(
+        tmp.path(),
+        "main.ahk",
+        "o := C()\nx := o.Kept\n\nclass C {\n    __New() {\n        this.DefineProp(\"Kept\", {Get: (*) => 1})\n    }\n}\n",
+    );
+    let (p, r) = run(&main);
+    assert!(
+        !any_dead_text_contains(&p, &r, "DefineProp"),
+        "the DefineProp defines a referenced name and must be kept"
+    );
+}
+
+#[test]
+fn unreferenced_constant_field_is_pruned_but_side_effecting_one_is_kept() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(
+        tmp.path(),
+        "main.ahk",
+        "o := C()\no.Used()\n\nclass C {\n    config := 0\n    live := Compute()\n    Used() {\n    }\n}\n\nCompute() {\n    return 1\n}\n",
+    );
+    let (p, r) = run(&main);
+    // `config := 0` (constant) shakes out; `live := Compute()` is kept (its initializer has
+    // side effects) and keeps `Compute` reachable.
+    assert_eq!(dead_member_names(&p, &r), names(&["config"]));
+    assert!(
+        !dead_names(&p, &r).contains("compute"),
+        "Compute is referenced by a kept field initializer"
+    );
+}
+
+#[test]
+fn struct_instance_members_are_never_pruned() {
+    // Pruning a struct's instance field would change its binary layout / identity, so every
+    // non-static struct member is kept regardless of references. Only `static` struct members
+    // are prunable. Here `y` (unreferenced instance field) survives, while the unreferenced
+    // static field `Scale` and static method `Unused` shake out.
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(
+        tmp.path(),
+        "main.ahk",
+        "v := Pt()\nx := v.X\n\nstruct Pt {\n    X: Int := 0\n    Y: Int := 0\n    static Scale := 2\n    static Unused() {\n    }\n}\n",
+    );
+    let (p, r) = run(&main);
+    assert_eq!(dead_member_names(&p, &r), names(&["Scale", "Unused"]));
+}
+
 #[test]
 fn unused_function_is_dead_used_one_is_kept_transitively() {
     let tmp = tempfile::tempdir().unwrap();

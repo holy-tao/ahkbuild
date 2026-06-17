@@ -17,6 +17,7 @@ use std::collections::HashSet;
 
 use ahkbuild_ir::{children, GroupId, NodeId, NodeKind, Program, Span};
 
+use crate::members::{has_directive, is_protected, MemberNameTable};
 use crate::resolve::{ModuleRef, Origin, Resolved};
 
 /// The outcome of marking: which nodes are live, which imports were used, and which groups
@@ -25,17 +26,32 @@ pub struct Reachability {
     pub live: HashSet<NodeId>,
     pub used_imports: HashSet<NodeId>,
     pub loaded: HashSet<GroupId>,
+    /// Methods/properties/constant fields of *live* classes whose names no live code can
+    /// reference — pruned even though their owning class survives.
+    pub dead_members: HashSet<NodeId>,
 }
 
 /// Mark all reachable declarations, starting by loading the entry group.
-pub fn mark(program: &Program, resolved: &Resolved) -> Reachability {
+///
+/// `table` drives per-member pruning of live classes; `dead_defineprops` are standalone
+/// `DefineProp` calls already slated for deletion, whose subtrees must not be walked (so the
+/// code they reference can shake out).
+pub fn mark(
+    program: &Program,
+    resolved: &Resolved,
+    table: &MemberNameTable,
+    dead_defineprops: &HashSet<NodeId>,
+) -> Reachability {
     let mut m = Marker {
         program,
         resolved,
+        table,
+        dead_defineprops,
         live: HashSet::new(),
         used_imports: HashSet::new(),
         loaded: HashSet::new(),
         blown: HashSet::new(),
+        dead_members: HashSet::new(),
         worklist: Vec::new(),
     };
 
@@ -49,12 +65,19 @@ pub fn mark(program: &Program, resolved: &Resolved) -> Reachability {
         live: m.live,
         used_imports: m.used_imports,
         loaded: m.loaded,
+        dead_members: m.dead_members,
     }
 }
 
 struct Marker<'a> {
     program: &'a Program,
     resolved: &'a Resolved,
+    /// The program-wide member-name table (per-member pruning). When blown, classes are kept
+    /// whole and `dead_members` stays empty.
+    table: &'a MemberNameTable,
+    /// Standalone `DefineProp` calls pruned ahead of marking — a barrier: their subtrees are
+    /// never walked, so references inside their descriptors are not followed.
+    dead_defineprops: &'a HashSet<NodeId>,
     live: HashSet<NodeId>,
     used_imports: HashSet<NodeId>,
     /// Groups whose bodies are known to run. Seeded from the entry group and grown as taken
@@ -63,6 +86,8 @@ struct Marker<'a> {
     /// Modules whose member/name resolution has been defeated by a dynamic construct; their
     /// declarations (and imports) are all kept. Tracked so we blow up each module only once.
     blown: HashSet<ModuleRef>,
+    /// Members of live classes that no live code references (see `Reachability::dead_members`).
+    dead_members: HashSet<NodeId>,
     worklist: Vec<(NodeId, ModuleRef)>,
 }
 
@@ -129,13 +154,100 @@ impl Marker<'_> {
         }
     }
 
-    /// Walk `id`'s subtree, resolving each node's outgoing name edges against `mref`.
+    /// Walk `id`'s subtree, resolving each node's outgoing name edges against `mref`. For a live
+    /// class/struct, descend only into the members that survive per-member pruning (recording
+    /// the rest as dead). Pruned `DefineProp` calls are a hard barrier — never descended.
     fn walk(&mut self, id: NodeId, mref: ModuleRef) {
-        let program = self.program;
         let mut stack = vec![id];
         while let Some(n) = stack.pop() {
+            if self.dead_defineprops.contains(&n) {
+                continue;
+            }
             self.resolve_edges(n, mref);
-            stack.extend(children(&program.arena[n].kind));
+            match self.member_descent(n) {
+                Some((keep, dead)) => {
+                    self.dead_members.extend(dead);
+                    stack.extend(keep);
+                }
+                None => stack.extend(children(&self.program.arena[n].kind)),
+            }
+        }
+    }
+
+    /// If `n` is a live class/struct subject to per-member pruning, partition its members into
+    /// `(kept, dead)`: methods/properties matched by the name table (or protected, or marked
+    /// `;@AhkBuild-Keep`) are kept, unreferenced ones are dead; fields are kept unless both
+    /// unreferenced *and* side-effect-free (`None`/literal initializer). Nested types are always
+    /// descended so their own members get the same treatment. Returns `None` (full child walk)
+    /// for non-type-decls and whenever the table is blown (keep classes whole).
+    ///
+    /// **Typed properties** (`name: Type`) are kept unconditionally: they only appear in struct
+    /// bodies, where they define the struct's binary layout — pruning one would change the
+    /// struct's identity. Methods don't affect layout, so they remain prunable. (They are still
+    /// descended so any references in their initializers stay live.)
+    fn member_descent(&self, n: NodeId) -> Option<(Vec<NodeId>, Vec<NodeId>)> {
+        if self.table.is_blown() {
+            return None;
+        }
+        let t = match &self.program.arena[n].kind {
+            NodeKind::ClassDecl(t) => t,
+            NodeKind::StructDecl(t) => t,
+            _ => return None,
+        };
+        let mut keep: Vec<NodeId> = t.nested.clone();
+        keep.extend(t.typed_fields.iter().copied());
+        let mut dead = Vec::new();
+        for &m in t.methods.iter().chain(&t.properties) {
+            if self.member_kept(m) {
+                keep.push(m);
+            } else {
+                dead.push(m);
+            }
+        }
+        for &f in t.static_fields.iter().chain(&t.instance_fields) {
+            if self.member_kept(f) || !self.field_is_prunable(f) {
+                keep.push(f);
+            } else {
+                dead.push(f);
+            }
+        }
+        Some((keep, dead))
+    }
+
+    /// Whether member `m` must be kept: unnamed, protected, `;@AhkBuild-Keep`-marked, or its
+    /// name is matchable in the program-wide member-name table.
+    fn member_kept(&self, m: NodeId) -> bool {
+        let Some(name) = self.member_name(m) else {
+            return true;
+        };
+        is_protected(&name)
+            || has_directive(self.program, m, "AhkBuild-Keep")
+            || self.table.matches(&name).is_some()
+    }
+
+    /// The declared name of a method/property/field member, lowercased.
+    fn member_name(&self, m: NodeId) -> Option<String> {
+        let text = |s| self.program.span_text(s).trim().to_ascii_lowercase();
+        match &self.program.arena[m].kind {
+            NodeKind::Function(f) => f.name.map(text),
+            NodeKind::Property(p) => p.name.map(text),
+            NodeKind::Field(f) => f.name.map(text),
+            NodeKind::TypedProperty(t) => t.name.map(text),
+            _ => None,
+        }
+    }
+
+    /// Whether a field's initializer is side-effect-free, so an unreferenced field can be
+    /// dropped: no initializer (unset) or a primitive literal.
+    fn field_is_prunable(&self, f: NodeId) -> bool {
+        let init = match &self.program.arena[f].kind {
+            NodeKind::Field(field) => field.initializer,
+            NodeKind::TypedProperty(t) => t.initializer,
+            _ => return false,
+        };
+        match init {
+            None => true,
+            Some(i) => matches!(self.program.arena[i].kind, NodeKind::Literal { .. }),
         }
     }
 
