@@ -69,7 +69,12 @@ pub fn link_entry(entry: &Path, search: &SearchPath) -> Result<LinkOutput> {
     let entry = canonical(entry).with_context(|| format!("entry script {}", entry.display()))?;
     // Built-ins for `#Include` resolution (`<Lib>` dirs, `%A_…%` expansion). The interpreter is
     // not running, so `A_ScriptDir` is the entry's directory and `A_AhkPath` is unknown.
-    let builtins = Builtins::detect(entry.parent().unwrap_or_else(|| Path::new(".")).to_path_buf());
+    let builtins = Builtins::detect(
+        entry
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf(),
+    );
     queue.push_back(entry);
 
     while let Some(path) = queue.pop_front() {
@@ -83,8 +88,14 @@ pub fn link_entry(entry: &Path, search: &SearchPath) -> Result<LinkOutput> {
         let (entry_file, entry_tree) = lowering
             .load(path.to_string_lossy().into_owned(), text.clone())
             .ok_or_else(|| anyhow!("parser returned no tree for {}", path.display()))?;
-        let report =
-            include::resolve_includes(&mut lowering, &builtins, entry_file, &path, &text, &entry_tree)?;
+        let report = include::resolve_includes(
+            &mut lowering,
+            &builtins,
+            entry_file,
+            &path,
+            &text,
+            &entry_tree,
+        )?;
         let splices = report.splices();
         include_outcomes.extend(report.outcomes);
         warnings.extend(report.warnings);
@@ -102,7 +113,10 @@ pub fn link_entry(entry: &Path, search: &SearchPath) -> Result<LinkOutput> {
             .map(|n| n.to_ascii_lowercase())
             .collect();
 
-        let importer_dir = path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+        let importer_dir = path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
         for imp in lowering.group_imports(gid) {
             // Embedded resources (`*RESNAME`) have no file to resolve.
             if imp.spec.starts_with('*') {

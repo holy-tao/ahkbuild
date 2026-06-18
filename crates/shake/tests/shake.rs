@@ -253,10 +253,7 @@ fn defineprop_with_unreferenced_name_is_pruned() {
     assert!(
         any_dead_text_contains(&p, &r, "DefineProp(\"Unused\""),
         "the DefineProp call should be pruned; dead spans: {:?}",
-        r.dead
-            .iter()
-            .map(|&n| p.text(n))
-            .collect::<Vec<_>>()
+        r.dead.iter().map(|&n| p.text(n)).collect::<Vec<_>>()
     );
 }
 
@@ -421,7 +418,11 @@ fn reexport_chain_is_kept_not_trimmed() {
     // names locally, the re-exports are public surface and must survive — both the re-export
     // import directives (never dropped) and the re-exported target declarations (kept live).
     let tmp = tempfile::tempdir().unwrap();
-    let main = write(tmp.path(), "main.ahk", "#Import Barrel as Lib\nLib.Thing()\n");
+    let main = write(
+        tmp.path(),
+        "main.ahk",
+        "#Import Barrel as Lib\nLib.Thing()\n",
+    );
     write(tmp.path(), "Barrel.ahk", "#Import export Core {*}\n");
     write(tmp.path(), "Core.ahk", "#Import export Thing\n");
     write(
@@ -433,7 +434,11 @@ fn reexport_chain_is_kept_not_trimmed() {
     let (p, r) = run(&main);
 
     // The re-exported `Thing` (and its transitive `Helper`) survive.
-    assert!(dead_names(&p, &r).is_empty(), "dead: {:?}", dead_names(&p, &r));
+    assert!(
+        dead_names(&p, &r).is_empty(),
+        "dead: {:?}",
+        dead_names(&p, &r)
+    );
     // The re-export directives are never dropped (the chain must hold at runtime).
     assert!(
         r.dropped_imports.is_empty(),
@@ -441,7 +446,11 @@ fn reexport_chain_is_kept_not_trimmed() {
         r.dropped_imports
     );
     // No module is removed — every link in the barrel chain is needed.
-    assert!(r.dead_modules.is_empty(), "dead modules: {:?}", r.dead_modules);
+    assert!(
+        r.dead_modules.is_empty(),
+        "dead modules: {:?}",
+        r.dead_modules
+    );
 }
 
 #[test]
@@ -465,7 +474,11 @@ fn reference_inside_parentheses_keeps_its_import() {
         r.dropped_imports
     );
     assert!(r.dead_modules.is_empty(), "Query module must survive");
-    assert!(dead_names(&p, &r).is_empty(), "dead: {:?}", dead_names(&p, &r));
+    assert!(
+        dead_names(&p, &r).is_empty(),
+        "dead: {:?}",
+        dead_names(&p, &r)
+    );
 }
 
 #[test]
@@ -512,7 +525,11 @@ fn used_import_loads_module_and_its_static_new_runs() {
     assert!(r.dropped_imports.is_empty(), "the import is used");
     assert!(r.dead_modules.is_empty(), "Lib is loaded");
     // Boot stays live via its static __New now that Lib's body runs.
-    assert!(dead_names(&p, &r).is_empty(), "dead: {:?}", dead_names(&p, &r));
+    assert!(
+        dead_names(&p, &r).is_empty(),
+        "dead: {:?}",
+        dead_names(&p, &r)
+    );
 }
 
 #[test]
@@ -538,7 +555,11 @@ fn side_effect_import_loads_its_module() {
         "side.ahk must stay loaded: {:?}",
         r.dead_modules
     );
-    assert!(dead_names(&p, &r).is_empty(), "dead: {:?}", dead_names(&p, &r));
+    assert!(
+        dead_names(&p, &r).is_empty(),
+        "dead: {:?}",
+        dead_names(&p, &r)
+    );
 }
 
 #[test]

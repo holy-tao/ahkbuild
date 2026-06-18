@@ -262,7 +262,10 @@ fn include_splices_into_one_group_transitively() {
 
     let names = entry_decl_names(&out.program);
     for want in ["MainFn", "LibFn", "DeepFn"] {
-        assert!(names.contains(&want.to_string()), "missing {want} in {names:?}");
+        assert!(
+            names.contains(&want.to_string()),
+            "missing {want} in {names:?}"
+        );
     }
 
     // Two First splices recorded (main->lib, lib->deep), none deduped/missing.
@@ -336,7 +339,11 @@ fn include_lib_resolves_with_underscore_fallback() {
     // `<MyPrefix_Func>` is not found directly; the prefix file `MyPrefix.ahk` in the local
     // Lib folder is the fallback.
     let main = write(tmp.path(), "main.ahk", "#Include <MyPrefix_Func>\n");
-    write(tmp.path(), "Lib/MyPrefix.ahk", "PrefixFn() {\n  return 1\n}\n");
+    write(
+        tmp.path(),
+        "Lib/MyPrefix.ahk",
+        "PrefixFn() {\n  return 1\n}\n",
+    );
 
     let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
     assert!(out.warnings.is_empty(), "{:?}", out.warnings);

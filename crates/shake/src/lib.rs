@@ -83,7 +83,8 @@ pub fn shake(program: &Program, plan: &BundlePlan) -> ShakeResult {
             continue;
         };
         let decls = &resolved.decls[&mref];
-        let droppable: HashSet<NodeId> = resolved.imports[&mref].droppable.iter().copied().collect();
+        let droppable: HashSet<NodeId> =
+            resolved.imports[&mref].droppable.iter().copied().collect();
 
         // Walk the body to find what survives and which imports are unused.
         let mut has_live = false;

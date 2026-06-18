@@ -20,7 +20,11 @@ fn write(dir: &std::path::Path, name: &str, contents: &str) -> PathBuf {
 fn bundle_wraps_imports_in_module_blocks() {
     let tmp = tempfile::tempdir().unwrap();
     let main = write(tmp.path(), "main.ahk", "#Import Greeter\nGreeter.Hello()\n");
-    write(tmp.path(), "Greeter.ahk", "export Hello() {\n    x := 1\n}\n");
+    write(
+        tmp.path(),
+        "Greeter.ahk",
+        "export Hello() {\n    x := 1\n}\n",
+    );
 
     let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
     let ahk = ahkbuild_emit::emit_ahk(&out.program, &out.plan, None);
@@ -41,14 +45,25 @@ fn path_import_is_rewritten_to_in_file_module_name() {
     let tmp = tempfile::tempdir().unwrap();
     // A quoted relative-path import with an alias: the path can't be a `#Module` name and
     // won't resolve from the bundle's location, so it must be rewritten to the assigned name.
-    let main = write(tmp.path(), "main.ahk", "#Import \"lib/Greeter\" as G\nG.Hello()\n");
-    write(tmp.path(), "lib/Greeter.ahk", "export Hello() {\n    return 1\n}\n");
+    let main = write(
+        tmp.path(),
+        "main.ahk",
+        "#Import \"lib/Greeter\" as G\nG.Hello()\n",
+    );
+    write(
+        tmp.path(),
+        "lib/Greeter.ahk",
+        "export Hello() {\n    return 1\n}\n",
+    );
 
     let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
     let ahk = ahkbuild_emit::emit_ahk(&out.program, &out.plan, None);
 
     // The path spec is gone; the import now names the in-file module, alias preserved.
-    assert!(!ahk.contains("lib/Greeter"), "path should be rewritten: {ahk}");
+    assert!(
+        !ahk.contains("lib/Greeter"),
+        "path should be rewritten: {ahk}"
+    );
     assert!(ahk.contains("#Import Greeter as G"), "{ahk}");
     assert!(ahk.contains("\n#Module Greeter\n"), "{ahk}");
 }
@@ -57,8 +72,16 @@ fn path_import_is_rewritten_to_in_file_module_name() {
 fn assigned_module_name_is_sanitized_to_a_valid_identifier() {
     let tmp = tempfile::tempdir().unwrap();
     // A file stem that is not a legal `#Module` name (leading digit, hyphen) must be coerced.
-    let main = write(tmp.path(), "main.ahk", "#Import \"3d-utils\" as U\nU.Val()\n");
-    write(tmp.path(), "3d-utils.ahk", "export Val() {\n    return 1\n}\n");
+    let main = write(
+        tmp.path(),
+        "main.ahk",
+        "#Import \"3d-utils\" as U\nU.Val()\n",
+    );
+    write(
+        tmp.path(),
+        "3d-utils.ahk",
+        "export Val() {\n    return 1\n}\n",
+    );
 
     let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
     let ahk = ahkbuild_emit::emit_ahk(&out.program, &out.plan, None);
@@ -113,7 +136,11 @@ fn path_qualified_import_is_rewritten_to_submodule_name() {
     let tmp = tempfile::tempdir().unwrap();
     // A path-qualified import targets Thing's `Inner` sub-module; the spec must be rewritten
     // to that sub-module's output name (here unchanged: `Inner`).
-    let main = write(tmp.path(), "main.ahk", "#Import \"Thing:Inner\" as I\nI.Q()\n");
+    let main = write(
+        tmp.path(),
+        "main.ahk",
+        "#Import \"Thing:Inner\" as I\nI.Q()\n",
+    );
     write(
         tmp.path(),
         "Thing.ahk",
@@ -123,7 +150,10 @@ fn path_qualified_import_is_rewritten_to_submodule_name() {
     let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
     let ahk = ahkbuild_emit::emit_ahk(&out.program, &out.plan, None);
 
-    assert!(!ahk.contains("Thing:Inner"), "path spec should be gone: {ahk}");
+    assert!(
+        !ahk.contains("Thing:Inner"),
+        "path spec should be gone: {ahk}"
+    );
     assert!(ahk.contains("#Import Inner as I"), "{ahk}");
     assert!(ahk.contains("\n#Module Thing\n"), "{ahk}");
     assert!(ahk.contains("\n#Module Inner\n"), "{ahk}");
@@ -171,7 +201,10 @@ fn include_is_spliced_inline() {
     let ahk = ahkbuild_emit::emit_ahk(&out.program, &out.plan, None);
 
     // The directive is replaced by the included file's text, in place between Before and After.
-    assert!(!ahk.contains("#Include"), "directive should be spliced away: {ahk}");
+    assert!(
+        !ahk.contains("#Include"),
+        "directive should be spliced away: {ahk}"
+    );
     assert!(ahk.contains("LibFn()"), "{ahk}");
     let before = ahk.find("Before()").unwrap();
     let lib = ahk.find("LibFn()").unwrap();

@@ -69,13 +69,7 @@ pub fn emit_ahk(program: &Program, plan: &BundlePlan, shake: Option<&ShakeResult
         let group = &program.groups[unit.group.0 as usize];
         let mut stack = Vec::new();
         let text = expand(
-            program,
-            group.file,
-            &rewrites,
-            &deletions,
-            &includes,
-            &multiply,
-            &mut stack,
+            program, group.file, &rewrites, &deletions, &includes, &multiply, &mut stack,
         );
 
         // The entry group's primary module stays the implicit `__Main` (no header). Every
@@ -137,7 +131,9 @@ fn expand(
                     let content = if stack.contains(inc) {
                         String::new()
                     } else {
-                        expand(program, *inc, rewrites, deletions, includes, multiply, stack)
+                        expand(
+                            program, *inc, rewrites, deletions, includes, multiply, stack,
+                        )
                     };
                     edits.push(Edit::new(*span, content));
                 }
@@ -227,7 +223,11 @@ fn fully_dead_groups(program: &Program, shake: &ShakeResult) -> HashSet<GroupId>
 /// Add deletion edits for every dead node and dropped import, keyed by the file whose text the
 /// span falls in. (Whitespace left behind is a known cosmetic follow-up; orphaned `;@`
 /// directive comments on a deleted node are harmless and left for now.)
-fn add_deletion_edits(program: &Program, shake: &ShakeResult, edits: &mut HashMap<FileId, Vec<Edit>>) {
+fn add_deletion_edits(
+    program: &Program,
+    shake: &ShakeResult,
+    edits: &mut HashMap<FileId, Vec<Edit>>,
+) {
     let mut delete = |span: Span| {
         if span.is_empty() {
             return;

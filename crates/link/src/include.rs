@@ -68,7 +68,13 @@ pub fn resolve_includes(
         module_files: HashSet::new(),
     };
     let mut module = Module::MAIN.to_ascii_lowercase();
-    r.process(entry_file, &entry_canon, entry_text, entry_tree, &mut module)?;
+    r.process(
+        entry_file,
+        &entry_canon,
+        entry_text,
+        entry_tree,
+        &mut module,
+    )?;
 
     // A `#Module` in a file pasted in more than once (via `#IncludeAgain` or into two modules)
     // is prohibited — it would reopen and duplicate the module. Warn rather than fail.
@@ -153,7 +159,13 @@ impl Resolver<'_> {
             let name = strip_angle(node_text(lib, text));
             match self.resolve_lib(name) {
                 Some(p) => self.splice(off, includer_file, &canonical(&p), again, module)?,
-                None => self.unresolved(off, includer_file, ignore, includer_canon, &format!("<{name}>"))?,
+                None => self.unresolved(
+                    off,
+                    includer_file,
+                    ignore,
+                    includer_canon,
+                    &format!("<{name}>"),
+                )?,
             }
             return Ok(());
         }
@@ -194,7 +206,8 @@ impl Resolver<'_> {
     ) -> Result<()> {
         let key = (module.clone(), canon.to_path_buf());
         if !again && self.included.contains(&key) {
-            self.outcomes.insert((includer_file, off), IncludeSplice::Dedup);
+            self.outcomes
+                .insert((includer_file, off), IncludeSplice::Dedup);
             return Ok(());
         }
         if self.stack.iter().any(|p| p == canon) {

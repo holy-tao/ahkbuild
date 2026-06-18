@@ -334,7 +334,10 @@ impl<'a> Lowerer<'a> {
                     let id = self.build_node(child);
                     self.attach_directives(id, &mut st.pending);
                     self.push_to_module(st.current, id);
-                    if matches!(child.kind(), "include_directive" | "include_again_directive") {
+                    if matches!(
+                        child.kind(),
+                        "include_directive" | "include_again_directive"
+                    ) {
                         self.maybe_splice(child, st);
                     }
                 }
