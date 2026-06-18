@@ -46,6 +46,10 @@ enum Commands {
         #[arg(long)]
         no_tree_shake: bool,
 
+        /// Keep comments in the bundle. By default comments are stripped.
+        #[arg(long)]
+        keep_comments: bool,
+
         /// Lower to IR and print the IR tree.
         #[cfg(debug_assertions)]
         #[arg(long)]
@@ -67,6 +71,7 @@ fn main() -> Result<()> {
             input,
             output,
             no_tree_shake,
+            keep_comments,
             #[cfg(debug_assertions)]
             ir,
             #[cfg(debug_assertions)]
@@ -93,12 +98,17 @@ fn main() -> Result<()> {
                 return Ok(());
             }
 
+            // Backend-neutral emit knobs, shared by both targets (comments stripped by default).
+            let emit_options = ahkbuild_emit::EmitOptions {
+                strip_comments: !keep_comments,
+            };
+
             // Otherwise run the appropriate bundler
             match format {
                 BundleTarget::Exe => {
                     todo!("EXE bundling is not yet supported");
                 }
-                BundleTarget::Ahk => bundle_ahk(input, output, !no_tree_shake),
+                BundleTarget::Ahk => bundle_ahk(input, output, !no_tree_shake, &emit_options),
             }
         }
     };
@@ -113,7 +123,12 @@ fn main() -> Result<()> {
 }
 
 /// Bundle into a single .ahk file
-fn bundle_ahk(input: &Path, output: &Option<PathBuf>, tree_shake: bool) -> Result<()> {
+fn bundle_ahk(
+    input: &Path,
+    output: &Option<PathBuf>,
+    tree_shake: bool,
+    emit_options: &ahkbuild_emit::EmitOptions,
+) -> Result<()> {
     let script_dir = input
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -147,7 +162,7 @@ fn bundle_ahk(input: &Path, output: &Option<PathBuf>, tree_shake: bool) -> Resul
         );
     }
 
-    let bundled = ahkbuild_emit::emit_ahk(&out.program, &out.plan, shaken.as_ref());
+    let bundled = ahkbuild_emit::emit_ahk(&out.program, &out.plan, shaken.as_ref(), emit_options);
 
     match output {
         Some(path) => {

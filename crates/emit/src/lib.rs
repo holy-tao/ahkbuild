@@ -26,6 +26,22 @@ use ahkbuild_shake::ShakeResult;
 
 use patch::{apply_edits, Edit};
 
+/// Backend-neutral knobs shared by every emitter (the `.ahk` emitter today, the planned `.exe`
+/// emitter tomorrow). Construct with [`EmitOptions::default`] for the standard release bundle.
+#[derive(Clone, Copy, Debug)]
+pub struct EmitOptions {
+    /// Strip comments from the bundle. On by default; the CLI's `--keep-comments` flips it off.
+    pub strip_comments: bool,
+}
+
+impl Default for EmitOptions {
+    fn default() -> Self {
+        Self {
+            strip_comments: true,
+        }
+    }
+}
+
 /// Emit a single self-contained `.ahk` bundle: the entry group's source, then each imported
 /// group wrapped in a `#Module Name` block, with every `#Include` spliced inline. Resolved
 /// `#Import`s are rewritten to name the in-file module, every module gets a program-unique
@@ -33,8 +49,14 @@ use patch::{apply_edits, Edit};
 /// so the bundle resolves entirely in-process.
 ///
 /// Pass a [`ShakeResult`] to also delete dead declarations and unused imports and omit
-/// fully-dead groups; pass `None` for a byte-faithful bundle.
-pub fn emit_ahk(program: &Program, plan: &BundlePlan, shake: Option<&ShakeResult>) -> String {
+/// fully-dead groups; pass `None` for a byte-faithful bundle. [`EmitOptions`] carries the
+/// backend-neutral knobs (e.g. comment stripping, on by default).
+pub fn emit_ahk(
+    program: &Program,
+    plan: &BundlePlan,
+    shake: Option<&ShakeResult>,
+    options: &EmitOptions,
+) -> String {
     // Imports the shaker dropped must not also be rewritten — they're being deleted.
     let dropped: HashSet<NodeId> = shake
         .map(|s| s.dropped_imports.iter().copied().collect())
@@ -54,6 +76,10 @@ pub fn emit_ahk(program: &Program, plan: &BundlePlan, shake: Option<&ShakeResult
     let mut deletions: HashMap<FileId, Vec<Edit>> = HashMap::new();
     if let Some(s) = shake {
         add_deletion_edits(program, s, &mut deletions);
+    }
+
+    if options.strip_comments {
+        add_strip_comment_edits(program, &mut deletions);
     }
 
     let includes = includes_by_file(program, plan, &dead_nodes);
@@ -238,6 +264,23 @@ fn add_deletion_edits(
     for &node in shake.dead.iter().chain(&shake.dropped_imports) {
         delete(program.arena[node].span);
     }
+}
+
+/// Add deletion edits for all comment nodes to edits
+pub fn add_strip_comment_edits(program: &Program, edits: &mut HashMap<FileId, Vec<Edit>>) {
+    // No need for a tree walk, we can just check the arena
+    program
+        .arena
+        .iter()
+        .filter(|node| matches!(program.arena[node.0].kind, NodeKind::Comment))
+        .filter_map(|(id, _)| {
+            let span = program.arena[id].span;
+            (!span.is_empty()).then_some(span)
+        })
+        .for_each(|span| {
+            let file = program.sources.file_at(span.start).id;
+            edits.entry(file).or_default().push(Edit::new(span, ""));
+        });
 }
 
 /// Build the per-file source edits that redirect each resolved `#Import` to its target group's

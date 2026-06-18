@@ -58,6 +58,35 @@ struct Point {
 }
 
 #[test]
+fn comments_are_lowered() {
+    // Comments in the structural positions that have a home in the IR tree (and so appear in
+    // the printed program): top level, a function body, a class body, a method body, and a
+    // `case` body. Comments in slots without an IR home (param lists, object literals, etc.)
+    // are lowered as unparented `Comment` nodes for stripping and don't print here; the emit
+    // crate's `comments_are_stripped` test exercises those.
+    insta::assert_snapshot!(ir("\
+; top-level comment
+x := 1  ; trailing comment
+Fn() {
+    ; in a function body
+    y := 2
+}
+class C {
+    ; in a class body
+    M() {
+        ; in a method body
+        z := 3
+    }
+}
+switch x {
+    case 1:
+        ; in a case body
+        w := 4
+}
+"));
+}
+
+#[test]
 fn class_with_members() {
     insta::assert_snapshot!(ir("\
 class Point extends Base {

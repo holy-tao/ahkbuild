@@ -27,7 +27,12 @@ fn bundle_wraps_imports_in_module_blocks() {
     );
 
     let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
-    let ahk = ahkbuild_emit::emit_ahk(&out.program, &out.plan, None);
+    let ahk = ahkbuild_emit::emit_ahk(
+        &out.program,
+        &out.plan,
+        None,
+        &ahkbuild_emit::EmitOptions::default(),
+    );
 
     // Entry content is preserved verbatim; the import is wrapped in a #Module block so the
     // entry's `#Import Greeter` re-targets to it. The bare name already matches the assigned
@@ -57,7 +62,12 @@ fn path_import_is_rewritten_to_in_file_module_name() {
     );
 
     let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
-    let ahk = ahkbuild_emit::emit_ahk(&out.program, &out.plan, None);
+    let ahk = ahkbuild_emit::emit_ahk(
+        &out.program,
+        &out.plan,
+        None,
+        &ahkbuild_emit::EmitOptions::default(),
+    );
 
     // The path spec is gone; the import now names the in-file module, alias preserved.
     assert!(
@@ -84,7 +94,12 @@ fn assigned_module_name_is_sanitized_to_a_valid_identifier() {
     );
 
     let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
-    let ahk = ahkbuild_emit::emit_ahk(&out.program, &out.plan, None);
+    let ahk = ahkbuild_emit::emit_ahk(
+        &out.program,
+        &out.plan,
+        None,
+        &ahkbuild_emit::EmitOptions::default(),
+    );
 
     assert!(ahk.contains("\n#Module M3d_utils\n"), "{ahk}");
     assert!(ahk.contains("#Import M3d_utils as U"), "{ahk}");
@@ -104,7 +119,12 @@ fn same_stem_in_different_dirs_gets_unique_names() {
     write(tmp.path(), "b/Util.ahk", "export V() {\n    return 2\n}\n");
 
     let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
-    let ahk = ahkbuild_emit::emit_ahk(&out.program, &out.plan, None);
+    let ahk = ahkbuild_emit::emit_ahk(
+        &out.program,
+        &out.plan,
+        None,
+        &ahkbuild_emit::EmitOptions::default(),
+    );
 
     assert!(ahk.contains("\n#Module Util\n"), "{ahk}");
     assert!(ahk.contains("\n#Module Util_2\n"), "{ahk}");
@@ -122,7 +142,12 @@ fn colliding_submodules_across_groups_are_renamed() {
     write(tmp.path(), "B.ahk", "#Module Helper\ny := 2\n");
 
     let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
-    let ahk = ahkbuild_emit::emit_ahk(&out.program, &out.plan, None);
+    let ahk = ahkbuild_emit::emit_ahk(
+        &out.program,
+        &out.plan,
+        None,
+        &ahkbuild_emit::EmitOptions::default(),
+    );
 
     assert!(ahk.contains("\n#Module Helper\n"), "{ahk}");
     assert!(ahk.contains("\n#Module Helper_2\n"), "{ahk}");
@@ -148,7 +173,12 @@ fn path_qualified_import_is_rewritten_to_submodule_name() {
     );
 
     let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
-    let ahk = ahkbuild_emit::emit_ahk(&out.program, &out.plan, None);
+    let ahk = ahkbuild_emit::emit_ahk(
+        &out.program,
+        &out.plan,
+        None,
+        &ahkbuild_emit::EmitOptions::default(),
+    );
 
     assert!(
         !ahk.contains("Thing:Inner"),
@@ -177,7 +207,12 @@ fn submodule_colliding_with_group_name_is_renamed_and_redirected() {
     );
 
     let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
-    let ahk = ahkbuild_emit::emit_ahk(&out.program, &out.plan, None);
+    let ahk = ahkbuild_emit::emit_ahk(
+        &out.program,
+        &out.plan,
+        None,
+        &ahkbuild_emit::EmitOptions::default(),
+    );
 
     // Foo's group keeps `Foo`; Bar's inner `#Module Foo` is renamed to `Foo_2`.
     assert!(ahk.contains("\n#Module Foo\n"), "{ahk}");
@@ -185,6 +220,89 @@ fn submodule_colliding_with_group_name_is_renamed_and_redirected() {
     // The bare import of Foo is untouched; the path-qualified one points at the renamed module.
     assert!(ahk.contains("#Import Foo\n"), "{ahk}");
     assert!(ahk.contains("#Import Foo_2 as BF"), "{ahk}");
+}
+
+#[test]
+fn comments_are_stripped() {
+    let tmp = tempfile::tempdir().unwrap();
+    // A comment in every structural position, each tagged `DELETEME` so we can assert it is
+    // gone. This covers both the positions that get an IR home (top level, function/class/method
+    // bodies, `case` bodies) and the ones lowered as unparented `Comment` nodes (param lists,
+    // object literals, `switch`/`try` bodies, property get/set blocks) — the strip pass scans
+    // the whole arena, so all of them must disappear.
+    let main = write(
+        tmp.path(),
+        "main.ahk",
+        "\
+; DELETEME top
+Main(a,        ; DELETEME param
+     b) {
+    ; DELETEME funcbody
+    x := 1     ; DELETEME trailing
+    obj := {p: 1,   ; DELETEME objlit
+        q: 2}
+    switch a {
+        ; DELETEME switchbody
+        case 1:
+            ; DELETEME casebody
+            x := 2
+    }
+    try {
+        x := 3
+    }
+    ; DELETEME trycatch
+    catch {
+        x := 4
+    }
+}
+class C {
+    ; DELETEME classbody
+    Prop {
+        ; DELETEME propblock
+        get => 1
+        set => 2
+    }
+    M() {
+        ; DELETEME methodbody
+        return 5
+    }
+}
+",
+    );
+
+    let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
+    let ahk = ahkbuild_emit::emit_ahk(
+        &out.program,
+        &out.plan,
+        None,
+        &ahkbuild_emit::EmitOptions::default(),
+    );
+
+    // No comment text survives, anywhere.
+    assert!(!ahk.contains("DELETEME"), "comment left in output:\n{ahk}");
+    // Real code is untouched.
+    assert!(ahk.contains("Main(a,"), "{ahk}");
+    assert!(ahk.contains("obj := {p: 1,"), "{ahk}");
+    assert!(ahk.contains("get => 1"), "{ahk}");
+    assert!(ahk.contains("return 5"), "{ahk}");
+}
+
+#[test]
+fn comments_are_kept_with_strip_disabled() {
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(
+        tmp.path(),
+        "main.ahk",
+        "; KEEPME top\nx := 1  ; KEEPME trailing\n",
+    );
+
+    let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
+    let opts = ahkbuild_emit::EmitOptions {
+        strip_comments: false,
+    };
+    let ahk = ahkbuild_emit::emit_ahk(&out.program, &out.plan, None, &opts);
+
+    assert_eq!(ahk.matches("KEEPME").count(), 2, "{ahk}");
 }
 
 #[test]
@@ -198,7 +316,12 @@ fn include_is_spliced_inline() {
     write(tmp.path(), "lib.ahk", "LibFn() {\n    return 7\n}\n");
 
     let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
-    let ahk = ahkbuild_emit::emit_ahk(&out.program, &out.plan, None);
+    let ahk = ahkbuild_emit::emit_ahk(
+        &out.program,
+        &out.plan,
+        None,
+        &ahkbuild_emit::EmitOptions::default(),
+    );
 
     // The directive is replaced by the included file's text, in place between Before and After.
     assert!(
@@ -225,7 +348,12 @@ fn duplicate_include_is_emitted_once() {
     write(tmp.path(), "util.ahk", "UtilFn() {\n    return 1\n}\n");
 
     let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
-    let ahk = ahkbuild_emit::emit_ahk(&out.program, &out.plan, None);
+    let ahk = ahkbuild_emit::emit_ahk(
+        &out.program,
+        &out.plan,
+        None,
+        &ahkbuild_emit::EmitOptions::default(),
+    );
 
     // First include splices the body; the deduped repeat emits nothing.
     assert_eq!(ahk.matches("UtilFn()").count(), 1, "{ahk}");
@@ -242,7 +370,12 @@ fn include_again_is_emitted_each_time() {
     write(tmp.path(), "util.ahk", "UtilFn() {\n    return 1\n}\n");
 
     let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
-    let ahk = ahkbuild_emit::emit_ahk(&out.program, &out.plan, None);
+    let ahk = ahkbuild_emit::emit_ahk(
+        &out.program,
+        &out.plan,
+        None,
+        &ahkbuild_emit::EmitOptions::default(),
+    );
 
     // #IncludeAgain pastes the content a second time.
     assert_eq!(ahk.matches("UtilFn()").count(), 2, "{ahk}");

@@ -158,6 +158,7 @@ fn collect(kind: &NodeKind, out: &mut Vec<NodeId>) {
         NodeKind::Hotstring { replacement, .. } => out.extend(*replacement),
         NodeKind::Directive { expression, .. } => out.extend(*expression),
         NodeKind::Label { .. } => {}
+        NodeKind::Comment => {}
     }
 }
 

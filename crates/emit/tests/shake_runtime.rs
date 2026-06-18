@@ -81,8 +81,9 @@ fn shaken_bundle_matches_unshaken_on_interpreter() {
 
     let linked = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
     let shaken = ahkbuild_shake::shake(&linked.program, &linked.plan);
-    let unshaken_src = ahkbuild_emit::emit_ahk(&linked.program, &linked.plan, None);
-    let shaken_src = ahkbuild_emit::emit_ahk(&linked.program, &linked.plan, Some(&shaken));
+    let opts = ahkbuild_emit::EmitOptions::default();
+    let unshaken_src = ahkbuild_emit::emit_ahk(&linked.program, &linked.plan, None, &opts);
+    let shaken_src = ahkbuild_emit::emit_ahk(&linked.program, &linked.plan, Some(&shaken), &opts);
 
     // Write the bundles to an isolated dir (no source files), so they must resolve in-process.
     let bundles = tempfile::tempdir().unwrap();

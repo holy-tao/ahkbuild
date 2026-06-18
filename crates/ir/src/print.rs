@@ -188,6 +188,7 @@ impl Printer<'_> {
             NodeKind::Hotstring { trigger, .. } => format!("Hotstring \"{}\"", name_of(trigger)),
             NodeKind::Directive { kind, .. } => format!("Directive #{kind}"),
             NodeKind::Label { name } => format!("Label \"{}\"", name_of(name)),
+            NodeKind::Comment => "Comment".into(),
         }
     }
 
@@ -413,6 +414,7 @@ impl Printer<'_> {
                 }
             }
             NodeKind::Label { .. } => {}
+            NodeKind::Comment => {}
         }
     }
 

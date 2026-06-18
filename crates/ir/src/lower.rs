@@ -530,6 +530,9 @@ impl<'a> Lowerer<'a> {
             // Blocks
             "block" => self.build_block(node),
 
+            // Comments
+            "block_comment" | "line_comment" => self.build_comment(node),
+
             // AHK-specific
             "hotkey" => self.build_hotkey(node),
             "hotstring" => self.build_hotstring(node),
@@ -617,8 +620,11 @@ impl<'a> Lowerer<'a> {
         }
         let mut cursor = container.walk();
         for child in container.named_children(&mut cursor) {
-            if let Some(param) = self.build_param(child) {
-                out.push(param);
+            match self.build_param(child) {
+                Some(param) => out.push(param),
+                None => {
+                    self.lower_stray_comment(child);
+                }
             }
         }
     }
@@ -756,6 +762,11 @@ impl<'a> Lowerer<'a> {
                     decl.nested.push(s);
                     s
                 }
+                "block_comment" | "line_comment" => {
+                    let cm = self.build_comment(child);
+                    decl.nested.push(cm);
+                    cm
+                }
                 _ => self.alloc(child, NodeKind::Opaque),
             };
             self.attach_directives(member, &mut pending);
@@ -847,7 +858,9 @@ impl<'a> Lowerer<'a> {
                     prop.setter = Some(id);
                     prop.is_arrow_setter = is_arrow;
                 }
-                _ => {}
+                _ => {
+                    self.lower_stray_comment(child);
+                }
             }
         }
     }
@@ -979,7 +992,9 @@ impl<'a> Lowerer<'a> {
                             .unwrap_or_else(|| self.name_of(child)),
                         alias: self.field_name(child, "alias"),
                     }),
-                    _ => {}
+                    _ => {
+                        self.lower_stray_comment(child);
+                    }
                 }
             }
             ImportBinding::Selective { wildcard, names }
@@ -1186,7 +1201,9 @@ impl<'a> Lowerer<'a> {
                     }
                 }
                 "object_literal_member_sequence" => self.collect_object_members(child, out),
-                _ => {}
+                _ => {
+                    self.lower_stray_comment(child);
+                }
             }
         }
     }
@@ -1275,7 +1292,9 @@ impl<'a> Lowerer<'a> {
                     match cursor.field_name() {
                         Some("iterator") => iterators.push(self.build_node(child)),
                         Some("iterable") => iterable = Some(self.build_node(child)),
-                        _ => {}
+                        _ => {
+                            self.lower_stray_comment(child);
+                        }
                     }
                 }
                 if !cursor.goto_next_sibling() {
@@ -1343,7 +1362,9 @@ impl<'a> Lowerer<'a> {
                 match child.kind() {
                     "case_clause" => cases.push(self.build_case(child, false)),
                     "default_clause" => cases.push(self.build_case(child, true)),
-                    _ => {}
+                    _ => {
+                        self.lower_stray_comment(child);
+                    }
                 }
             }
         }
@@ -1367,6 +1388,11 @@ impl<'a> Lowerer<'a> {
                     match cursor.field_name() {
                         Some("value") => values.push(self.build_node(child)),
                         Some("body") => body.push(self.build_node(child)),
+                        // A comment in a case clause has no field name; give it a home in the
+                        // body so it is lowered (and stripped) like any other case statement.
+                        _ if matches!(child.kind(), "line_comment" | "block_comment") => {
+                            body.push(self.build_comment(child));
+                        }
                         _ => {}
                     }
                 }
@@ -1405,7 +1431,9 @@ impl<'a> Lowerer<'a> {
                         .child_by_field_name("body")
                         .map(|b| self.build_node(b));
                 }
-                _ => {}
+                _ => {
+                    self.lower_stray_comment(child);
+                }
             }
         }
         let try_body = try_body.unwrap_or_else(|| self.alloc(node, NodeKind::Opaque));
@@ -1468,6 +1496,27 @@ impl<'a> Lowerer<'a> {
     fn build_label(&mut self, node: Node) -> NodeId {
         let name = self.field_name(node, "name");
         self.alloc(node, NodeKind::Label { name })
+    }
+
+    fn build_comment(&mut self, node: Node) -> NodeId {
+        self.alloc(node, NodeKind::Comment)
+    }
+
+    /// Lower a comment that lands in a structural slot with no place for it in the IR.
+    ///
+    /// Comments are grammar *extras*, so they can appear between the specific children that
+    /// these builders recognise (param/import-name lists, object literals, `switch`/`try`
+    /// bodies, property blocks, `for` headers). We still allocate a [`NodeKind::Comment`] so the
+    /// arena-wide comment-strip pass can delete its span, but there is no parent to hang it on,
+    /// so it stays unparented: invisible to the root-reachable walks (`print`, `children`,
+    /// tree-shaking) and seen only by the strip pass, which iterates the whole arena. Non-comment
+    /// children are left alone. Returns whether `node` was a comment.
+    fn lower_stray_comment(&mut self, node: Node) -> bool {
+        let is_comment = matches!(node.kind(), "line_comment" | "block_comment");
+        if is_comment {
+            self.build_comment(node);
+        }
+        is_comment
     }
 
     // -----------------------------------------------------------------

@@ -175,6 +175,8 @@ pub enum NodeKind {
     Label {
         name: Option<Span>,
     },
+    /// A line or block comment. Tracked in the IR so that we can drop them easily
+    Comment,
 }
 
 /// A module. `name` is the case-insensitive identity key *within its [`Group`]* (implicit
