@@ -8,6 +8,7 @@ members = [
     "crates/emit",
     "crates/cli",
 ]
+exclude = ["vendor/tree-sitter-autohotkey"]
 
 [workspace.package]
 version = "0.1.0"
