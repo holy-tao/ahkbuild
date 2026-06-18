@@ -32,12 +32,109 @@ use patch::{apply_edits, Edit};
 pub struct EmitOptions {
     /// Strip comments from the bundle. On by default; the CLI's `--keep-comments` flips it off.
     pub strip_comments: bool,
+    /// How aggressively to normalize whitespace in the final output. Defaults to
+    /// [`WsLevel::Readable`].
+    pub whitespace: WsLevel,
+}
+
+/// How much whitespace the final normalization pass collapses. Deletions and comment-stripping
+/// leave holes (blank lines, trailing indentation); this controls how they're cleaned up.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WsLevel {
+    /// Leave the spliced text exactly as the edits produced it.
+    Off,
+    /// Strip trailing whitespace and collapse runs of 2+ blank lines to one. Targets the holes
+    /// left by deletions while preserving the author's single blank-line separators. For `.ahk`.
+    Readable,
+    /// Strip trailing whitespace, drop all blank lines, strip leading indentation, and collapse
+    /// intra-line space runs (outside string literals). For `.exe`, where readability is moot.
+    Minify,
 }
 
 impl Default for EmitOptions {
     fn default() -> Self {
         Self {
             strip_comments: true,
+            whitespace: WsLevel::Readable,
+        }
+    }
+}
+
+/// Normalize whitespace in fully-assembled output text per `level`. Runs after all
+/// offset-dependent work, so it's free to rewrite lines without touching any [`Span`].
+///
+/// [`WsLevel::Readable`] strips trailing whitespace and collapses runs of blank lines to one;
+/// [`WsLevel::Minify`] additionally drops every blank line, strips leading indentation, and
+/// collapses intra-line space runs outside string literals.
+pub fn normalize_whitespace(text: &str, level: WsLevel) -> String {
+    if level == WsLevel::Off {
+        return text.to_string();
+    }
+    let minify = level == WsLevel::Minify;
+
+    let mut out = String::with_capacity(text.len());
+    let mut pending_blank = false;
+    for raw in text.lines() {
+        let mut line = raw.trim_end();
+        let mut collapsed;
+        if minify {
+            line = line.trim_start();
+            collapsed = String::new();
+            collapse_inner_spaces(line, &mut collapsed);
+            line = &collapsed;
+        }
+        if line.is_empty() {
+            // Readable: remember we owe at most one blank. Minify: drop entirely.
+            pending_blank = !minify;
+            continue;
+        }
+        if pending_blank {
+            out.push('\n');
+            pending_blank = false;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+/// Collapse runs of spaces/tabs to a single space, but only outside string literals so column
+/// alignment inside `"..."` / `'...'` survives. Tracks AHK's doubled-quote escape (`""`, `''`).
+/// Note: this is text-only and doesn't recognize comments, so it assumes comment stripping has
+/// already removed them (the default).
+fn collapse_inner_spaces(line: &str, out: &mut String) {
+    let mut quote: Option<char> = None;
+    let mut prev_ws = false;
+    let mut chars = line.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match quote {
+            Some(q) => {
+                out.push(ch);
+                if ch == q {
+                    // A doubled quote (`""`/`''`) is an escaped quote: consume both, stay open.
+                    if chars.peek() == Some(&q) {
+                        out.push(chars.next().unwrap());
+                    } else {
+                        quote = None;
+                    }
+                }
+                prev_ws = false;
+            }
+            None => {
+                if ch == '"' || ch == '\'' {
+                    quote = Some(ch);
+                    out.push(ch);
+                    prev_ws = false;
+                } else if ch == ' ' || ch == '\t' {
+                    if !prev_ws {
+                        out.push(' ');
+                    }
+                    prev_ws = true;
+                } else {
+                    out.push(ch);
+                    prev_ws = false;
+                }
+            }
         }
     }
 }
@@ -126,7 +223,7 @@ pub fn emit_ahk(
             }
         }
     }
-    out
+    normalize_whitespace(&out, options.whitespace)
 }
 
 /// Emit one file's text: its own rewrite (and, unless multiply-spliced, deletion) edits, plus
@@ -319,4 +416,62 @@ fn import_edits(
             .push(Edit::new(spec_span, target));
     }
     edits
+}
+
+#[cfg(test)]
+mod ws_tests {
+    use super::{normalize_whitespace, WsLevel};
+
+    #[test]
+    fn off_is_identity() {
+        let s = "a\n\n\n  b  \n";
+        assert_eq!(normalize_whitespace(s, WsLevel::Off), s);
+    }
+
+    #[test]
+    fn readable_strips_trailing_and_collapses_blank_runs() {
+        let input = "foo\n   \n\n\nbar  \t\n";
+        // The 3-blank hole collapses to one; trailing whitespace on `bar` goes.
+        assert_eq!(
+            normalize_whitespace(input, WsLevel::Readable),
+            "foo\n\nbar\n"
+        );
+    }
+
+    #[test]
+    fn readable_keeps_single_author_blank() {
+        let input = "a\n\nb\n";
+        assert_eq!(normalize_whitespace(input, WsLevel::Readable), "a\n\nb\n");
+    }
+
+    #[test]
+    fn minify_drops_blanks_and_leading_indent() {
+        let input = "foo\n\n    bar\n";
+        assert_eq!(normalize_whitespace(input, WsLevel::Minify), "foo\nbar\n");
+    }
+
+    #[test]
+    fn minify_collapses_inner_spaces_outside_strings() {
+        let input = "x    :=    1\n";
+        assert_eq!(normalize_whitespace(input, WsLevel::Minify), "x := 1\n");
+    }
+
+    #[test]
+    fn minify_preserves_spaces_inside_strings() {
+        let input = "msg   :=   \"a    b\"\n";
+        assert_eq!(
+            normalize_whitespace(input, WsLevel::Minify),
+            "msg := \"a    b\"\n"
+        );
+    }
+
+    #[test]
+    fn minify_handles_doubled_quote_escape() {
+        // The `""` is an escaped quote inside one string; the spaces stay literal.
+        let input = "s := \"a    \"\"    b\"\n";
+        assert_eq!(
+            normalize_whitespace(input, WsLevel::Minify),
+            "s := \"a    \"\"    b\"\n"
+        );
+    }
 }

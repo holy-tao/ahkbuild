@@ -99,8 +99,13 @@ fn main() -> Result<()> {
             }
 
             // Backend-neutral emit knobs, shared by both targets (comments stripped by default).
+            // `.exe` output isn't read by humans, so it gets the aggressive whitespace pass.
             let emit_options = ahkbuild_emit::EmitOptions {
                 strip_comments: !keep_comments,
+                whitespace: match format {
+                    BundleTarget::Exe => ahkbuild_emit::WsLevel::Minify,
+                    BundleTarget::Ahk => ahkbuild_emit::WsLevel::Readable,
+                },
             };
 
             // Otherwise run the appropriate bundler

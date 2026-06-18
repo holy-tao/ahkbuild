@@ -299,6 +299,7 @@ fn comments_are_kept_with_strip_disabled() {
     let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
     let opts = ahkbuild_emit::EmitOptions {
         strip_comments: false,
+        ..Default::default()
     };
     let ahk = ahkbuild_emit::emit_ahk(&out.program, &out.plan, None, &opts);
 
