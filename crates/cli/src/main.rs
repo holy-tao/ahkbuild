@@ -80,8 +80,10 @@ fn main() -> Result<()> {
             // If we've got one of the diagnostic flags, do that and exit
             #[cfg(debug_assertions)]
             if *ir || *sexp {
-                let source = std::fs::read_to_string(input)
+                let raw = std::fs::read_to_string(input)
                     .with_context(|| format!("reading {}", input.display()))?;
+                let source =
+                    ahkbuild_preprocess::resolve_continuations(&input.to_string_lossy(), &raw)?;
 
                 let tree = ahkbuild_syntax::parse(&source).context("parser returned no tree")?;
                 let root = tree.root_node();

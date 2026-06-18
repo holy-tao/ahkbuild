@@ -20,6 +20,15 @@ use ahkbuild_ir::node::Module;
 use ahkbuild_ir::{GroupId, Lowering, NodeId, NodeKind, Program};
 use anyhow::{anyhow, Context, Result};
 
+/// Read a source file and resolve its continuation sections before it enters the
+/// pipeline. Doing this at the raw-text stage keeps the stored/parsed text and the
+/// caller's own copy (used to slice `#Include` offsets) byte-identical.
+pub(crate) fn read_source(path: &Path) -> Result<String> {
+    let raw =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    ahkbuild_preprocess::run(&path.to_string_lossy(), &raw)
+}
+
 /// The result of linking: the assembled program, a backend-neutral [`BundlePlan`], and
 /// non-fatal diagnostics (unresolved imports, missing sub-modules).
 pub struct LinkOutput {
@@ -81,8 +90,7 @@ pub fn link_entry(entry: &Path, search: &SearchPath) -> Result<LinkOutput> {
         if loaded.contains_key(&path) {
             continue;
         }
-        let text = std::fs::read_to_string(&path)
-            .with_context(|| format!("reading {}", path.display()))?;
+        let text = read_source(&path)?;
         // Load + parse the file, resolve its `#Include` graph (loading included files into the
         // shared source map), then lower the group splicing those files in.
         let (entry_file, entry_tree) = lowering

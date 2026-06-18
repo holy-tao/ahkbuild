@@ -1,5 +1,5 @@
 [package]
-name = "ahkbuild-link"
+name = "ahkbuild-preprocess"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,10 +7,4 @@ repository.workspace = true
 publish = false
 
 [dependencies]
-ahkbuild-syntax.workspace = true
-ahkbuild-ir.workspace = true
-ahkbuild-preprocess.workspace = true
 anyhow.workspace = true
-
-[dev-dependencies]
-tempfile = "3"

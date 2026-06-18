@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/syntax",
     "crates/ir",
+    "crates/preprocess",
     "crates/link",
     "crates/shake",
     "crates/emit",
@@ -26,6 +27,7 @@ clap = { version = "4", features = ["derive"] }
 # Internal
 ahkbuild-syntax = { path = "crates/syntax" }
 ahkbuild-ir = { path = "crates/ir" }
+ahkbuild-preprocess = { path = "crates/preprocess" }
 ahkbuild-link = { path = "crates/link" }
 ahkbuild-shake = { path = "crates/shake" }
 ahkbuild-emit = { path = "crates/emit" }

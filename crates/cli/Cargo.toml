@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 ahkbuild-syntax.workspace = true
 ahkbuild-ir.workspace = true
+ahkbuild-preprocess.workspace = true
 ahkbuild-link.workspace = true
 ahkbuild-shake.workspace = true
 ahkbuild-emit.workspace = true

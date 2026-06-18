@@ -225,7 +225,7 @@ impl Resolver<'_> {
             self.included.insert(key);
         }
 
-        let text = std::fs::read_to_string(canon)
+        let text = crate::read_source(canon)
             .with_context(|| format!("reading #Include {}", canon.display()))?;
         let (inc_file, inc_tree) = self
             .lowering
