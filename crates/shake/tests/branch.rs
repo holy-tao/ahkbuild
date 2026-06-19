@@ -52,14 +52,26 @@ Script() {
 
 #[test]
 fn else_arm_kept_when_not_compiled() {
-    let dead = dead_fns(SRC, Constants { is_compiled: Some(false), ptr_size: None });
+    let dead = dead_fns(
+        SRC,
+        Constants {
+            is_compiled: Some(false),
+            ptr_size: None,
+        },
+    );
     assert!(dead.contains(&"compiled".to_string()), "dead: {dead:?}");
     assert!(!dead.contains(&"script".to_string()), "dead: {dead:?}");
 }
 
 #[test]
 fn then_arm_kept_when_compiled() {
-    let dead = dead_fns(SRC, Constants { is_compiled: Some(true), ptr_size: None });
+    let dead = dead_fns(
+        SRC,
+        Constants {
+            is_compiled: Some(true),
+            ptr_size: None,
+        },
+    );
     assert!(dead.contains(&"script".to_string()), "dead: {dead:?}");
     assert!(!dead.contains(&"compiled".to_string()), "dead: {dead:?}");
 }
