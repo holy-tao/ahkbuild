@@ -38,3 +38,22 @@ This allows the parser to correctly identify the section as a call to `MsgBox`. 
 this way. This behavior cannot be modified or configured.
 
 [continuation section]: https://www.autohotkey.com/docs/alpha/Scripts.htm#continuation
+
+### Ignore Sections
+
+Code between a pair of ignore directives is ignored; it is literally not included in the parsed source. Ignore
+directives must be the first statement on their line, but can be followed by any amount of text. `ahkbuild` respects
+both [`@Ahk2Exe-Ignore`] (begin / end) and `;@AhkBuild-Ignore`. Note that `;@Ahk2Exe-IgnoreKeep` is not respected, to
+conditionally *include* code in a script, use the [`A_IsCompiled`] variable and allow tree-shaking to delete the dead
+branch.
+
+```autohotkey
+MsgBox "This message appears in both the compiled and uncompiled script"
+;@AhkBuild-IgnoreBegin this text is ignored and can be used as a comment
+MsgBox "This message does NOT appear in the compiled script"
+;@AhkBuild-IgnoreEnd
+MsgBox "This message appears in both the compiled and uncompiled script"
+```
+
+[`@Ahk2Exe-Ignore`]: https://www.autohotkey.com/docs/v2/misc/Ahk2ExeDirectives.htm#IgnoreKeep
+[`A_IsCompiled`]: https://www.autohotkey.com/docs/v2/Variables.htm#IsCompiled
