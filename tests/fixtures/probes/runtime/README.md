@@ -14,7 +14,7 @@ rename pass and whether the `.exe` (`*RESNAME`) backend is collision-free.
 ## Findings (AutoHotkey v2.1-alpha.30, 64-bit)
 
 | Probe | Setup | Output | Conclusion |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | P-A | two `#Module Helper` in **one file** | `P-A GetX()=123` | same-file blocks **reopen/merge** into one namespace |
 | P-B | two **imported files**, each `#Module Helper` | `P-B A=A B=B` | each file is its own **group**; same-named sub-modules are **isolated** |
 | P-C | same, from embedded **RCDATA** via `#Import "*RES"` | `P-C A=A B=B` | `*RESNAME` units are groups too — identical to file imports |

@@ -1,16 +1,16 @@
 # Tree-Shaking (Dead Code Elimination)
 
-Tree-shaking removes unreferenced functions and classes from the build output. It is opt-in via the `--tree-shake` CLI flag, it should eventually be made on by default.
+Tree-shaking removes unreferenced functions and classes from the build output.
 
 Because AutoHotkey is dynamically typed, we're limited in what we can remove with confidence. In practice, the tree-shaking algorithm will keep all code which *could be* referenced.
 
 ## Pipeline Position
 
-```
-Source -> Preprocessor -> CST (tree-sitter) -> IR Builder -> [Tree-Shaking] -> Emitter -> Output
+```text
+Source -> Preprocessor -> Link (CST + IR per file) -> [Tree-Shaking] -> Emitter -> Output
 ```
 
-The tree-shaking pass runs after the IR is fully built (including reference resolution) and before emission. It marks dead symbols' IR nodes as `deleted`, which the emitter then patches out.
+The tree-shaking pass (`ahkbuild_shake::shake`) runs after the linker has assembled the full multi-group `Program` and before emission. It returns a `ShakeResult` (sets of dead node IDs), which the emitter turns into span deletions. The IR is never mutated.
 
 In the future it should run *after* inlining and constant folding.
 
@@ -19,9 +19,12 @@ In the future it should run *after* inlining and constant folding.
 - **Functions**: A top-level function is removed if no live code references it.
 - **Classes**: A class is removed entirely if no live code references it.
 - **Class members**: Within a live class, individual methods, properties, and fields can be pruned if their name never appears in any member access expression in the program. This uses a global name table approach (see **Per-Member Pruning** below).
+- **`#Import` directives**: If the bound name of an `#Import` is never referenced from live code, the directive is dropped. The target module still auto-executes if loaded by another path; a module reached *only* through unused imports is never loaded and shakes out whole.
+- **Modules**: A `#Module` block (or a whole imported file) is removed if none of its declarations survive and no live code depends on it.
 - **Labels**: A label is removed if unreferenced. Labels in the auto-execute section are always live.
 
-### Future plans:
+### Future plans
+
 - **If / ternary branches**: if an if statement or ternary expression's condition inlines/folds to a constant expression, prune the dead half
 - **loops**: if a loop inlines to 0 iterations or we can confidently determine that a for-loop iterates 0 items, delete it
 - **nitpicks**: low-effort, low-reward
@@ -32,7 +35,7 @@ In the future it should run *after* inlining and constant folding.
 Entry points are the roots of the reachability analysis. Everything transitively referenced from an entry point is kept; everything else is dead.
 
 | Entry Point | Rationale |
-|---|---|
+| --- | --- |
 | Top-level non-declaration statements | The auto-execute section runs unconditionally at startup |
 | Hotkey bodies | Hotkeys are user-triggered; their bodies must be preserved |
 | Hotstring replacements | Same as hotkeys |
@@ -47,45 +50,43 @@ Entry points are the roots of the reachability analysis. Everything transitively
 
 ## Reachability Analysis
 
-We do worklist-based reachability analysis:
+We do worklist-based reachability analysis. The four passes in `ahkbuild_shake::shake` are:
 
-1. **Collect entry points** (`TreeShaker._CollectEntryPoints`): Walk `program.body`, classify each node, and collect all symbols directly referenced by entry point code.
+1. **Resolve** (`shake::resolve::resolve`): Build per-module declaration tables and import-binding tables from the linked `Program` + `BundlePlan`. This is the foundation for name lookups during the mark phase.
 
-2. **Build member name table** (`TreeShaker._CollectMemberNames`): Walk the entire IR tree and collect all member names that could be referenced at runtime. Sources include static member access expressions (`obj.Foo`), [dynamic](https://www.autohotkey.com/docs/v2/Language.htm#dynamic-variables) member access with extractable constant parts (`obj.prefix%expr%`), and string arguments to reflection functions (`ObjBindMethod(obj, "Method")`). 
+2. **Build member name table** (`shake::members::collect`): Walk the entire IR and collect all member names that could be referenced at runtime. Sources include static member access expressions (`obj.Foo`), [dynamic](https://www.autohotkey.com/docs/v2/Language.htm#dynamic-variables) member access with extractable constant parts (`obj.prefix%expr%`), and string arguments to reflection functions (`ObjBindMethod(obj, "Method")`).
 
    > [!WARNING]
    > If a fully-dynamic member access with no constant parts is found (e.g. `obj.%prop%`, `ObjBindMethod(myObj, variable)`), the table is marked as "blown up" and member-level pruning is disabled.
 
    See [Per-member pruning](#per-member-pruning) below for details.
 
-1. **Prune dead DefineProp calls** (`TreeShaker._PruneDefinePropCalls`): Walk the IR tree for `*.DefineProp("literal", ...)` calls. Mark the call as `deleted` if:
+3. **Prune dead DefineProp calls** (`shake::defineprop::prune`): Walk the IR for `*.DefineProp("literal", ...)` calls. Mark the call dead if:
    1. The property name is not in the name table ***or*** it's in the name table exactly once, and the only referencer is inside the `DefineProp` call itself, ***and***
-   2. The property is not a [protected meta-function](#protected-meta-functions) like `__New` 
-   
-   This must run before `MarkLive` so references inside pruned descriptors are not followed.
+   2. The property is not a [protected meta-function](#protected-meta-functions) like `__New`
 
-2. **Mark live** (`IRSymbolTable.MarkLive`): Process the worklist. For each symbol:
-   - Mark it `isLive = true`
-   - If it's a class, propagate liveness to member symbols. With a name table, only members whose names appear in the table (or are [protected meta-functions](#protected-meta-functions)) are pushed. Without one (blown up), all members are pushed.
-   - Walk the symbol's declaring IR node subtree to find referenced symbols and add them to the worklist
+   This must run before marking so references inside pruned descriptors are not followed.
 
-3. **Delete dead** (`IRSymbolTable.DeleteDeadSymbols`): Set `node.deleted = true` on every symbol that remained unreached.
+4. **Mark live** (`shake::reach::mark`): Load the entry group, then drain a worklist of `(node, owning module)` pairs. For each live node:
+   - Walk its subtree to find referenced names and add their declarations to the worklist.
+   - If it's a class, propagate liveness to member nodes. With a name table, only members whose names appear in the table (or are [protected meta-functions](#protected-meta-functions)) are included. Without one (blown up), all members are kept.
+   - Track which `#Import` directives are "taken" (their bound name is used); taken imports load their target group, seeding its auto-execute roots.
 
-4. **Emit**: The emitter's `_Walk` method sees `deleted` nodes and creates empty-replacement patches, effectively removing them from the output.
+5. **Collect result**: The `ShakeResult` accumulates dead node IDs (`dead`), droppable `#Import` directives (`dropped_imports`), and dead module nodes (`dead_modules`). The emitter turns each into a span deletion.
 
 ## Reference Tracking
 
-The reachability walk (`_CollectReferencesInto`) finds symbol references by:
+The reachability walk (`shake::reach`) finds symbol references by walking IR node subtrees:
 
 | Reference Type | How It's Found |
-|---|---|
-| Variable/function name usage | `IR.Identifier` nodes with `resolvedSymbol` (set during IR phase 2) |
-| Direct call targets | `IR.CallExpr` nodes with `resolvedTarget` |
-| Superclass names | `IR.ClassDecl.superclass` — looked up in symbol table by name |
-| Goto label targets | `IR.GotoStmt.label` — looked up in symbol table by name |
-| Catch error types | `IR.CatchClause.errorTypes` — each looked up in symbol table by name |
+| --- | --- |
+| Variable/function name | `NodeKind::Identifier` — text looked up in the owning module's declaration table |
+| Superclass name | `NodeKind::ClassDecl.superclass` — text looked up by name |
+| Goto label target | `NodeKind::GotoStmt` target text — looked up by name |
+| Catch error types | `NodeKind::CatchClause` error type names — each looked up by name |
+| Cross-module import binding | `NodeKind::ImportDirective` — bound name resolved via the `BundlePlan` |
 
-Superclass, goto, and catch references are stored as raw strings on their IR nodes (not as `IR.Identifier` children), so they require explicit handling in the reachability walker.
+Superclass, goto, and catch references are raw-text fields on their IR nodes (not child `Identifier` nodes), so they require explicit handling in the reachability walker.
 
 ## Per-Member Pruning
 
@@ -96,7 +97,7 @@ Per-member pruning removes unused methods, properties, and fields from live clas
 A `MemberNameTable` is built by walking the entire IR:
 
 | Source | What's collected |
-|---|---|
+| --- | --- |
 | Static member access (`obj.Foo`) | Exact name "Foo" |
 | Dynamic member with outer prefix (`obj.Get%name%`) | Prefix pattern "Get" |
 | Dynamic member with outer suffix (`obj.%expr%Handler`) | Suffix pattern "Handler" |
@@ -122,15 +123,18 @@ These members are **never pruned** from live classes, regardless of the name tab
 - [`__Item`](https://www.autohotkey.com/docs/v2/Objects.htm#__Item)
 - [`__Enum`](https://www.autohotkey.com/docs/v2/Objects.htm#__Enum)
 - [`Call`](https://www.autohotkey.com/docs/v2/Functions.htm#DynCall)
+- [`__value`](https://www.autohotkey.com/docs/alpha/Structs.htm#abstract)
+- [`__Ref`](https://www.autohotkey.com/docs/alpha/lib/Struct.htm#__Ref)
 
-These are invoked implicitly by the AHK runtime. `Call` is included because calling a non-function object implicitly invokes `.Call()`, and without type inference we cannot determine when this happens.
+These are invoked implicitly by the AHK runtime, so it's not possible to statically determine whether they're called or not. `Call` is included because calling a non-function object implicitly invokes `.Call()`, and without type inference we cannot determine when this happens.
 
 ### Reflection functions
 
 The algorithm tracks the following reflection functions, because callers can use these to access the underlying properties:
--  [`ObjBindMethod`](https://www.autohotkey.com/docs/v2/lib/ObjBindMethod.htm)
--  [`GetOwnPropDesc`](https://www.autohotkey.com/docs/v2/lib/Object.htm#GetOwnPropDesc)
--  [`GetMethod`](https://www.autohotkey.com/docs/v2/lib/GetMethod.htm)
+
+- [`ObjBindMethod`](https://www.autohotkey.com/docs/v2/lib/ObjBindMethod.htm)
+- [`GetOwnPropDesc`](https://www.autohotkey.com/docs/v2/lib/Object.htm#GetOwnPropDesc)
+- [`GetMethod`](https://www.autohotkey.com/docs/v2/lib/GetMethod.htm)
 
 Using any of these functions creates a reference to the relevant name or prefix / suffix pattern, if the name isn't constant. Using a variable with no constant parts will defeat member pruning, as with dereference expressions.
 
@@ -140,13 +144,16 @@ Using any of these functions creates a reference to the relevant name or prefix 
 
 When the callee of a call expression is a `DerefExpr` (e.g., `%funcName%()`), the target function cannot be determined statically. A warning is logged. The call's arguments are still traced for references, but the callee itself is opaque.
 
-#### Future improvements:
-- if constant propagation resolves the variable to a known string, the dynamic call can be resolved. 
+#### Future improvements
+
+- if constant propagation resolves the variable to a known string, the dynamic call can be resolved.
 - Similarly, if the name is an identifier or member access expression and we can resolve it to a limited set of possible strings, the dynamic call can be resolved to one or more names. For example:
+
    ```autohotkey
    for propertyName in ["A", "B", "C"]
       obj.%propertyName% := "example"    ; Check every variable with name "propertyName"
    ```
+
 - Currently only prefixes and suffixes are tracked in the name table, but we can build much more sophisticated patterns in some cases. For example, a construct like `My%deref%cool%deref%thing` should only match names following a pattern like `My*cool*thing`, but currently the part between the derefs is ignored
 
 #### Dynamic member access disables member pruning
@@ -162,11 +169,8 @@ Per-member pruning is conservative: if `.Foo` appears anywhere in the program, A
 `DefineProp` calls with a string literal first argument are checked against the member name table. If the defined property name is never referenced anywhere in the program outside of the `DefineProp` call itself and is not a protected meta-function, the entire call statement is deleted. This also enables transitive pruning: functions referenced only from a pruned `DefineProp` descriptor become dead code.
 
 Conservatively kept (not pruned):
+
 - Non-literal property name (`this.DefineProp(varName, ...)`)
 - Protected meta-function names (`__Get`, `__Set`, etc.)
 - Calls embedded in larger expressions (not standalone statements)
 - Chained calls (`obj.DefineProp("A", d1).DefineProp("B", d2)`)
-
-### Whitespace artifacts
-
-Deleting a function or class removes its byte range but leaves surrounding whitespace (blank lines) intact. The output may have extra blank lines where dead code was removed.
