@@ -19,6 +19,7 @@ pub mod patch;
 
 use std::collections::{HashMap, HashSet};
 
+use ahkbuild_fold::{Branch, ConstValue, FoldResult};
 use ahkbuild_ir::node::ImportSource;
 use ahkbuild_ir::{FileId, GroupId, NodeId, NodeKind, Program, Span};
 use ahkbuild_link::{BundlePlan, IncludeSplice};
@@ -146,12 +147,15 @@ fn collapse_inner_spaces(line: &str, out: &mut String) {
 /// so the bundle resolves entirely in-process.
 ///
 /// Pass a [`ShakeResult`] to also delete dead declarations and unused imports and omit
-/// fully-dead groups; pass `None` for a byte-faithful bundle. [`EmitOptions`] carries the
-/// backend-neutral knobs (e.g. comment stripping, on by default).
+/// fully-dead groups; pass `None` for a byte-faithful bundle. Pass a [`FoldResult`] to
+/// substitute build-time constants (`A_IsCompiled` -> `0`/`1`) and remove the dead arm of any
+/// `if`/ternary whose condition folded. [`EmitOptions`] carries the backend-neutral knobs
+/// (e.g. comment stripping, on by default).
 pub fn emit_ahk(
     program: &Program,
     plan: &BundlePlan,
     shake: Option<&ShakeResult>,
+    fold: Option<&FoldResult>,
     options: &EmitOptions,
 ) -> String {
     // Imports the shaker dropped must not also be rewritten — they're being deleted.
@@ -174,9 +178,19 @@ pub fn emit_ahk(
     if let Some(s) = shake {
         add_deletion_edits(program, s, &mut deletions);
     }
+    if let Some(f) = fold {
+        add_branch_edits(program, f, &mut deletions);
+    }
 
     if options.strip_comments {
         add_strip_comment_edits(program, &mut deletions);
+    }
+
+    // Constant substitution is a rewrite (same value in every copy of a file). Skip any
+    // built-in that already lies inside a deleted region (a collapsed branch's condition):
+    // the deletion removes it, and emitting both would tie on start position.
+    if let Some(f) = fold {
+        add_substitution_edits(program, f, &deletions, &mut rewrites);
     }
 
     let includes = includes_by_file(program, plan, &dead_nodes);
@@ -360,6 +374,119 @@ fn add_deletion_edits(
     };
     for &node in shake.dead.iter().chain(&shake.dropped_imports) {
         delete(program.arena[node].span);
+    }
+}
+
+/// Add rewrite edits replacing each folded build-time constant identifier with its literal
+/// value (e.g. `A_IsCompiled` -> `0`). Safe as a rewrite: the value is identical in every copy
+/// of a multiply-spliced file. A substitution falling inside a removed branch's condition is
+/// swallowed by that branch's outer deletion via `apply_edits`'s overlap resolution.
+fn add_substitution_edits(
+    program: &Program,
+    fold: &FoldResult,
+    deletions: &HashMap<FileId, Vec<Edit>>,
+    edits: &mut HashMap<FileId, Vec<Edit>>,
+) {
+    for (&node, value) in &fold.literals {
+        let span = trim_span(program.arena[node].span, program.text(node));
+        if span.is_empty() {
+            continue;
+        }
+        let file = program.sources.file_at(span.start).id;
+        // Drop substitutions covered by a deletion (e.g. a collapsed branch's condition).
+        let covered = deletions.get(&file).is_some_and(|ds| {
+            ds.iter()
+                .any(|d| d.span.start <= span.start && span.end <= d.span.end)
+        });
+        if covered {
+            continue;
+        }
+        edits
+            .entry(file)
+            .or_default()
+            .push(Edit::new(span, render_const(value)));
+    }
+}
+
+/// Add deletion edits that collapse each folded `if`/ternary down to its surviving arm by
+/// deleting the scaffolding around it — the condition and dead arm — while leaving the live
+/// arm's body in place so its own inner edits (substitutions, tree-shaking) still apply. When
+/// the surviving arm is a braced block its braces are stripped too, leaving just the inner
+/// statements; a dead `if` with no `else` (or whose arm is an empty block) is deleted whole.
+fn add_branch_edits(program: &Program, fold: &FoldResult, edits: &mut HashMap<FileId, Vec<Edit>>) {
+    let mut delete = |start: u32, end: u32| {
+        if start >= end {
+            return;
+        }
+        let span = Span { start, end };
+        let file = program.sources.file_at(start).id;
+        edits.entry(file).or_default().push(Edit::new(span, ""));
+    };
+    for (&node, &branch) in &fold.branches {
+        let stmt = program.arena[node].span;
+        // The node of the surviving arm, if any. `None` => delete the whole statement.
+        let keep = match &program.arena[node].kind {
+            NodeKind::IfStmt {
+                then_body,
+                else_body,
+                ..
+            } => match branch {
+                Branch::Then => Some(*then_body),
+                Branch::Else => *else_body,
+                Branch::Dead => None,
+            },
+            NodeKind::TernaryExpr {
+                then_branch,
+                else_branch,
+                ..
+            } => match branch {
+                Branch::Then => Some(*then_branch),
+                Branch::Else | Branch::Dead => Some(*else_branch),
+            },
+            _ => continue,
+        };
+        // The span to preserve in place: a braced block's *interior* (so the redundant braces
+        // go too), otherwise the arm node itself. An empty block leaves nothing.
+        let kept = keep.and_then(|arm| match &program.arena[arm].kind {
+            NodeKind::Block { body } => {
+                let first = body.first()?;
+                let last = body.last()?;
+                Some((
+                    program.arena[*first].span.start,
+                    program.arena[*last].span.end,
+                ))
+            }
+            _ => {
+                let s = program.arena[arm].span;
+                Some((s.start, s.end))
+            }
+        });
+        match kept {
+            Some((start, end)) => {
+                delete(stmt.start, start); // leading `if cond {` / `cond ?`
+                delete(end, stmt.end); // trailing ` else { … }` / closing `}` / `: …`
+            }
+            None => delete(stmt.start, stmt.end),
+        }
+    }
+}
+
+/// Shrink `span` to its non-whitespace content, given its source `text`.
+fn trim_span(span: Span, text: &str) -> Span {
+    let lead = (text.len() - text.trim_start().len()) as u32;
+    let trail = (text.len() - text.trim_end().len()) as u32;
+    Span {
+        start: span.start + lead,
+        end: span.end - trail,
+    }
+}
+
+/// Render a folded constant back to AHK source text.
+fn render_const(v: &ConstValue) -> String {
+    match v {
+        ConstValue::Int(i) => i.to_string(),
+        ConstValue::Float(f) => f.to_string(),
+        ConstValue::Str(s) => format!("\"{}\"", s.replace('"', "\"\"")),
     }
 }
 

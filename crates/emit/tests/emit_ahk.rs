@@ -31,6 +31,7 @@ fn bundle_wraps_imports_in_module_blocks() {
         &out.program,
         &out.plan,
         None,
+        None,
         &ahkbuild_emit::EmitOptions::default(),
     );
 
@@ -66,6 +67,7 @@ fn path_import_is_rewritten_to_in_file_module_name() {
         &out.program,
         &out.plan,
         None,
+        None,
         &ahkbuild_emit::EmitOptions::default(),
     );
 
@@ -98,6 +100,7 @@ fn assigned_module_name_is_sanitized_to_a_valid_identifier() {
         &out.program,
         &out.plan,
         None,
+        None,
         &ahkbuild_emit::EmitOptions::default(),
     );
 
@@ -123,6 +126,7 @@ fn same_stem_in_different_dirs_gets_unique_names() {
         &out.program,
         &out.plan,
         None,
+        None,
         &ahkbuild_emit::EmitOptions::default(),
     );
 
@@ -145,6 +149,7 @@ fn colliding_submodules_across_groups_are_renamed() {
     let ahk = ahkbuild_emit::emit_ahk(
         &out.program,
         &out.plan,
+        None,
         None,
         &ahkbuild_emit::EmitOptions::default(),
     );
@@ -176,6 +181,7 @@ fn path_qualified_import_is_rewritten_to_submodule_name() {
     let ahk = ahkbuild_emit::emit_ahk(
         &out.program,
         &out.plan,
+        None,
         None,
         &ahkbuild_emit::EmitOptions::default(),
     );
@@ -210,6 +216,7 @@ fn submodule_colliding_with_group_name_is_renamed_and_redirected() {
     let ahk = ahkbuild_emit::emit_ahk(
         &out.program,
         &out.plan,
+        None,
         None,
         &ahkbuild_emit::EmitOptions::default(),
     );
@@ -275,6 +282,7 @@ class C {
         &out.program,
         &out.plan,
         None,
+        None,
         &ahkbuild_emit::EmitOptions::default(),
     );
 
@@ -301,7 +309,7 @@ fn comments_are_kept_with_strip_disabled() {
         strip_comments: false,
         ..Default::default()
     };
-    let ahk = ahkbuild_emit::emit_ahk(&out.program, &out.plan, None, &opts);
+    let ahk = ahkbuild_emit::emit_ahk(&out.program, &out.plan, None, None, &opts);
 
     assert_eq!(ahk.matches("KEEPME").count(), 2, "{ahk}");
 }
@@ -320,6 +328,7 @@ fn include_is_spliced_inline() {
     let ahk = ahkbuild_emit::emit_ahk(
         &out.program,
         &out.plan,
+        None,
         None,
         &ahkbuild_emit::EmitOptions::default(),
     );
@@ -353,6 +362,7 @@ fn duplicate_include_is_emitted_once() {
         &out.program,
         &out.plan,
         None,
+        None,
         &ahkbuild_emit::EmitOptions::default(),
     );
 
@@ -374,6 +384,7 @@ fn include_again_is_emitted_each_time() {
     let ahk = ahkbuild_emit::emit_ahk(
         &out.program,
         &out.plan,
+        None,
         None,
         &ahkbuild_emit::EmitOptions::default(),
     );
