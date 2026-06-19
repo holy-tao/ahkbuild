@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  markdownlint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Run markdownlint-cli2
+        uses: DavidAnson/markdownlint-cli2-action@v16
+        with:
+          globs: '**/*.md'
+
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # No submodules so rustfmt doesn't complain about tree-sitter
+          submodules: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets --all-features
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --all-features
+
+  msrv:
+    name: MSRV (${{ matrix.rust }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        rust:
+          - "1.96"   # keep in sync with rust-version in Cargo.toml
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --all-features

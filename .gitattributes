@@ -1,0 +1,11 @@
+# Force LF line endings for text files. The IR snapshot tests slice fixtures by byte
+# offset, so CRLF in the working tree would shift every offset and break them. Keeping
+# the whole repo LF also avoids autocrlf churn on a mixed-platform checkout.
+* text=auto eol=lf
+
+# Binary files: never normalize or attempt to diff.
+*.exe binary
+*.dll binary
+*.png binary
+*.ico binary
+*.chm binary

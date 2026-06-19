@@ -1,0 +1,13 @@
+[package]
+name = "ahkbuild-ir"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+ahkbuild-syntax.workspace = true
+
+[dev-dependencies]
+insta = "1"

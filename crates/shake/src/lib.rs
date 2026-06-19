@@ -1,0 +1,125 @@
+//! Module-aware tree-shaking: dead-code elimination by reachability.
+//!
+//! Given a linked [`Program`] + [`BundlePlan`], [`shake`] finds the declarations no live
+//! code can reach and reports them as a [`ShakeResult`] for the emitter to delete. It never
+//! mutates the IR — like every other pass, removal is expressed as span edits at emit time.
+//!
+//! It works at **declaration / whole-module** granularity with conservative, name-based,
+//! module-scoped resolution: a top-level function/class is dead if nothing references its
+//! name; an `#Import` is dropped if its bound name is never used; a module with no surviving
+//! content is removed entirely. Over-keeping is safe; under-keeping would drop live code, so
+//! anything ambiguous (dynamic references, namespace member access, wildcard imports) keeps
+//! more.
+//!
+//! On top of that, **per-member pruning** trims a live class down to the members live code can
+//! reach: a program-wide [member-name table](members) records every member name any access
+//! could resolve to (static `obj.Foo`, dynamic `obj.Get%x%`, reflection-builtin string args),
+//! and a live class keeps only its matching (or protected, or `;@AhkBuild-Keep`-marked)
+//! members. [`defineprop`] additionally drops standalone `DefineProp("Name", …)` statements
+//! whose name nothing references. A fully-dynamic member access disables member pruning
+//! program-wide (classes kept whole).
+
+mod defineprop;
+mod members;
+mod reach;
+mod resolve;
+
+use std::collections::HashSet;
+
+use ahkbuild_ir::{NodeId, NodeKind, Program};
+use ahkbuild_link::BundlePlan;
+
+/// What tree-shaking found to remove: dead declaration statements, unreferenced class members,
+/// pruned `DefineProp` calls, unused `#Import` directives, and whole modules. The emitter turns
+/// each into a deletion edit (and skips emitting a fully-dead group). Overlapping spans (a
+/// pruned member or `DefineProp` inside an already-dead class/module) are resolved by the
+/// emitter — the outer deletion wins — so listing both is harmless.
+#[derive(Debug, Default)]
+pub struct ShakeResult {
+    /// Spans to delete: top-level declaration statements (and, for inline dead modules, their
+    /// body statements and `#Module` header), plus unreferenced class members and pruned
+    /// standalone `DefineProp` calls.
+    pub dead: HashSet<NodeId>,
+    /// `#Import` directive nodes whose bound name is never referenced — safe to drop (the
+    /// target module still auto-executes).
+    pub dropped_imports: Vec<NodeId>,
+    /// Module nodes with zero surviving content. If *every* module of a group is dead, the
+    /// emitter omits the whole unit; otherwise the module's spans are deleted via `dead`.
+    pub dead_modules: Vec<NodeId>,
+}
+
+impl ShakeResult {
+    /// Whether anything will be removed.
+    pub fn is_empty(&self) -> bool {
+        self.dead.is_empty() && self.dropped_imports.is_empty() && self.dead_modules.is_empty()
+    }
+}
+
+/// Run tree-shaking over a linked program.
+pub fn shake(program: &Program, plan: &BundlePlan) -> ShakeResult {
+    let resolved = resolve::resolve(program, plan);
+
+    // Build the program-wide member-name table, then prune standalone `DefineProp` calls whose
+    // property names it never matches (this also strips those calls' descriptor referencers,
+    // so a name used only inside a pruned call stops counting). Both run before marking.
+    let mut table = members::collect(program);
+    let dead_defineprops = defineprop::prune(program, &mut table);
+
+    let reach = reach::mark(program, &resolved, &table, &dead_defineprops);
+
+    let mut result = ShakeResult::default();
+    // Pruned DefineProp calls and unreferenced class members are deleted by their own spans.
+    result.dead.extend(dead_defineprops);
+    result.dead.extend(reach.dead_members.iter().copied());
+
+    // The entry module (main script's `__Main`) is the program; never remove it.
+    let entry = program
+        .groups
+        .first()
+        .and_then(|g| g.modules.first().copied());
+
+    for &mref in &resolved.modules {
+        let NodeKind::Module(module) = &program.arena[mref.module].kind else {
+            continue;
+        };
+        let decls = &resolved.decls[&mref];
+        let droppable: HashSet<NodeId> =
+            resolved.imports[&mref].droppable.iter().copied().collect();
+
+        // Walk the body to find what survives and which imports are unused.
+        let mut has_live = false;
+        let mut has_kept_import = false;
+        let mut local_dropped = Vec::new();
+        for &stmt in &module.body {
+            if matches!(program.arena[stmt].kind, NodeKind::ImportDirective(_)) {
+                if droppable.contains(&stmt) && !reach.used_imports.contains(&stmt) {
+                    local_dropped.push(stmt);
+                } else {
+                    has_kept_import = true;
+                }
+            } else if reach.live.contains(&stmt) {
+                has_live = true;
+            }
+        }
+
+        // A module whose group was never loaded never runs at all: it's dead in its entirety,
+        // imports and all (a non-droppable import inside it must not keep it alive).
+        let group_loaded = reach.loaded.contains(&mref.group);
+        let is_entry = Some(mref.module) == entry;
+        if !is_entry && (!group_loaded || (!has_live && !has_kept_import)) {
+            // Nothing in this module survives — remove it whole.
+            result.dead_modules.push(mref.module);
+            result.dead.insert(mref.module); // its `#Module` header span
+            result.dead.extend(module.body.iter().copied());
+        } else {
+            for &d in &decls.all {
+                if !reach.live.contains(&d) {
+                    result.dead.insert(d);
+                }
+            }
+            result.dropped_imports.extend(local_dropped);
+        }
+    }
+
+    result
+}

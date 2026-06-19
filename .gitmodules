@@ -1,18 +1,3 @@
-[submodule "tests/YUnit"]
-	path = tests/YUnit
-	url = git@github.com:holy-tao/YUnit.git
-[submodule "Lib/tree-sitter"]
-	path = Lib/tree-sitter
-	url = git@github.com:holy-tao/tree-sitter.ahk.git
-[submodule "Lib/extensions"]
-	path = Lib/extensions
-	url = git@github.com:holy-tao/AhkExtensions.git
-[submodule "Lib/log4ahk"]
-	path = Lib/log4ahk
-	url = git@github.com:holy-tao/log4ahk.git
-[submodule "Lib/argparse"]
-	path = Lib/argparse
-	url = git@github.com:holy-tao/ahkargparse.git
-[submodule "Lib/collections"]
-	path = Lib/collections
-	url = git@github.com:holy-tao/ahkcollections.git
+[submodule "vendor/tree-sitter-autohotkey"]
+	path = vendor/tree-sitter-autohotkey
+	url = git@github.com:holy-tao/tree-sitter-autohotkey.git
