@@ -8,6 +8,9 @@ mod lex;
 mod continuation;
 use continuation::resolve_continuations;
 
+mod ignore;
+use ignore::scan_ignores;
+
 /// Preprocess the provided source.
 ///
 /// `name` labels the source for error messages. Returns the rewritten source, or an
@@ -15,6 +18,7 @@ use continuation::resolve_continuations;
 /// resolved (unterminated, unknown option, or a code section that can't be flattened
 /// onto one line).
 pub fn run(name: &str, src: &str) -> Result<String> {
-    let output = resolve_continuations(name, src)?;
+    let mut output = resolve_continuations(name, src)?;
+    output = scan_ignores(name, &output)?;
     Ok(output)
 }
