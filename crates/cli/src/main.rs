@@ -57,6 +57,16 @@ enum Commands {
         #[arg(long)]
         keep_comments: bool,
 
+        /// Override `A_IsCompiled` to fold build-time branches (e.g. `--compiled false`). Off by
+        /// default for `ahk` (a bundle may later be compiled with ahk2exe).
+        #[arg(long)]
+        compiled: Option<bool>,
+
+        /// Target bitness (32 or 64) used to fold `A_PtrSize`. Defaults from a bitness-pinned
+        /// `#Requires` when present.
+        #[arg(long)]
+        bitness: Option<u8>,
+
         /// Lower to IR and print the IR tree.
         #[cfg(debug_assertions)]
         #[arg(long)]
@@ -93,6 +103,8 @@ fn main() -> Result<()> {
             output,
             no_tree_shake,
             keep_comments,
+            compiled,
+            bitness,
             #[cfg(debug_assertions)]
             ir,
             #[cfg(debug_assertions)]
@@ -135,7 +147,14 @@ fn main() -> Result<()> {
                 BundleTarget::Exe => {
                     todo!("EXE bundling is not yet supported");
                 }
-                BundleTarget::Ahk => bundle_ahk(input, output, !no_tree_shake, &emit_options),
+                BundleTarget::Ahk => bundle_ahk(
+                    input,
+                    output,
+                    !no_tree_shake,
+                    *compiled,
+                    *bitness,
+                    &emit_options,
+                ),
             }
         }
     };
@@ -154,6 +173,8 @@ fn bundle_ahk(
     input: &Path,
     output: &Option<PathBuf>,
     tree_shake: bool,
+    compiled: Option<bool>,
+    bitness: Option<u8>,
     emit_options: &ahkbuild_emit::EmitOptions,
 ) -> Result<()> {
     let script_dir = input
@@ -178,8 +199,34 @@ fn bundle_ahk(
         eprintln!("warning: {w}");
     }
 
+    // Build-time constants. `A_PtrSize` is taken from `--bitness`, else from a bitness-pinned
+    // `#Requires` (a certainty when present). `A_IsCompiled` is folded only when `--compiled`
+    // is given — for `ahk` we assume nothing, since a bundle may later be compiled with ahk2exe.
+    let ptr_size = match bitness {
+        Some(32) => Some(4),
+        Some(64) => Some(8),
+        Some(other) => anyhow::bail!("invalid --bitness {other}; expected 32 or 64"),
+        None => ahkbuild_fold::ptr_size_from_requires(&out.program),
+    };
+    let consts = ahkbuild_fold::Constants {
+        is_compiled: compiled,
+        ptr_size,
+    };
+    // Fold whenever we're optimizing (`--no-tree-shake` opts out for a faithful bundle).
+    // Pure-constant conditions (`if 2 + 2 == 4`) fold regardless of the flags; `A_IsCompiled`
+    // folds only when `--compiled` made its value known (the evaluator yields `None` otherwise).
+    let folded = tree_shake.then(|| ahkbuild_fold::fold(&out.program, &consts));
+    if let Some(f) = &folded {
+        eprintln!(
+            "constant folding: {} literal(s) substituted, {} branch(es) resolved",
+            f.literals.len(),
+            f.branches.len(),
+        );
+    }
+
     // Tree-shake by default (dead-code elimination); `--no-tree-shake` opts out.
-    let shaken = tree_shake.then(|| ahkbuild_shake::shake(&out.program, &out.plan));
+    let shaken =
+        tree_shake.then(|| ahkbuild_shake::shake(&out.program, &out.plan, folded.as_ref()));
     if let Some(s) = &shaken {
         eprintln!(
             "tree-shaking: {} dead node(s), {} dropped import(s), {} dead module(s)",
@@ -189,7 +236,13 @@ fn bundle_ahk(
         );
     }
 
-    let bundled = ahkbuild_emit::emit_ahk(&out.program, &out.plan, shaken.as_ref(), emit_options);
+    let bundled = ahkbuild_emit::emit_ahk(
+        &out.program,
+        &out.plan,
+        shaken.as_ref(),
+        folded.as_ref(),
+        emit_options,
+    );
 
     match output {
         Some(path) => {
