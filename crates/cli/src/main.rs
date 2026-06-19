@@ -4,7 +4,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[cfg(debug_assertions)]
 use anyhow::Context;
 
 use anyhow::Result;
