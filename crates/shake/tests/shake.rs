@@ -21,7 +21,7 @@ fn write(dir: &std::path::Path, name: &str, contents: &str) -> PathBuf {
 /// Link `main` (plus any sibling files already written) and tree-shake the result.
 fn run(main: &std::path::Path) -> (Program, ShakeResult) {
     let out = link_entry(main, &SearchPath::from_dirs([])).unwrap();
-    let result = shake(&out.program, &out.plan);
+    let result = shake(&out.program, &out.plan, None);
     (out.program, result)
 }
 

@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 ahkbuild-ir.workspace = true
 ahkbuild-link.workspace = true
+ahkbuild-fold.workspace = true
 
 [dev-dependencies]
 ahkbuild-syntax.workspace = true

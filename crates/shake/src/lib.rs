@@ -26,6 +26,7 @@ mod resolve;
 
 use std::collections::HashSet;
 
+use ahkbuild_fold::FoldResult;
 use ahkbuild_ir::{NodeId, NodeKind, Program};
 use ahkbuild_link::BundlePlan;
 
@@ -56,7 +57,11 @@ impl ShakeResult {
 }
 
 /// Run tree-shaking over a linked program.
-pub fn shake(program: &Program, plan: &BundlePlan) -> ShakeResult {
+///
+/// When `fold` is `Some`, branches whose conditions folded to a build-time constant are
+/// shaken at the arm level: reachability descends only into the surviving arm, so any
+/// declaration reachable *only* from a dropped arm shakes out with everything else.
+pub fn shake(program: &Program, plan: &BundlePlan, fold: Option<&FoldResult>) -> ShakeResult {
     let resolved = resolve::resolve(program, plan);
 
     // Build the program-wide member-name table, then prune standalone `DefineProp` calls whose
@@ -65,7 +70,7 @@ pub fn shake(program: &Program, plan: &BundlePlan) -> ShakeResult {
     let mut table = members::collect(program);
     let dead_defineprops = defineprop::prune(program, &mut table);
 
-    let reach = reach::mark(program, &resolved, &table, &dead_defineprops);
+    let reach = reach::mark(program, &resolved, &table, &dead_defineprops, fold);
 
     let mut result = ShakeResult::default();
     // Pruned DefineProp calls and unreferenced class members are deleted by their own spans.
