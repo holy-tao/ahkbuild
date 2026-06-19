@@ -7,6 +7,7 @@ name = "ahkbuild-cli"
 version = "0.1.0"
 dependencies = [
  "ahkbuild-emit",
+ "ahkbuild-fold",
  "ahkbuild-ir",
  "ahkbuild-link",
  "ahkbuild-preprocess",
@@ -20,11 +21,20 @@ dependencies = [
 name = "ahkbuild-emit"
 version = "0.1.0"
 dependencies = [
+ "ahkbuild-fold",
  "ahkbuild-ir",
  "ahkbuild-link",
  "ahkbuild-shake",
  "ahkbuild-syntax",
  "tempfile",
+]
+
+[[package]]
+name = "ahkbuild-fold"
+version = "0.1.0"
+dependencies = [
+ "ahkbuild-ir",
+ "ahkbuild-syntax",
 ]
 
 [[package]]
@@ -57,6 +67,7 @@ dependencies = [
 name = "ahkbuild-shake"
 version = "0.1.0"
 dependencies = [
+ "ahkbuild-fold",
  "ahkbuild-ir",
  "ahkbuild-link",
  "ahkbuild-syntax",
@@ -562,7 +573,7 @@ dependencies = [
 
 [[package]]
 name = "tree-sitter-autohotkey"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "cc",
  "tree-sitter-language",
