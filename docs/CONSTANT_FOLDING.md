@@ -14,22 +14,21 @@ Like every other pass it never mutates the IR - it returns a side table (`FoldRe
 
 `fold(program, &Constants) -> FoldResult` computes two things:
 
-- **`literals`** - the **maximal** constant subexpressions that fold *because of* a known
-  built-in (`A_IsCompiled`, `A_PtrSize`), mapped to their value. The emitter rewrites each one's
-  span to the rendered literal. "Maximal" means the largest such expression: `A_PtrSize * 8` is
-  recorded as `64` (not the inner `A_PtrSize` as `8`), and `"lib" . A_PtrSize` as `"lib8"`. Pure
-  author constants (`2 + 2`, `true`) are *not* rewritten - only expressions whose value the
-  build determines. A subexpression that evaluates to a **float** is left unrecorded (we fall
-  back to substituting the built-ins inside it) so we never reproduce AHK's number formatting.
+- **`literals`** - the **maximal** constant subexpressions that fold, mapped to their value. The
+  emitter rewrites each one's span to the rendered literal.
+  - "Maximal" means the largest such expression: `A_PtrSize * 8` is recorded as `64` (not the
+    inner `A_PtrSize` as `8`), and `"lib" . A_PtrSize` as `"lib8"`.
+  - A subexpression that evaluates to a **float** is left unrecorded (we fall back to substituting
+    the constants inside it) so we never reproduce AHK's number formatting.
 - **`branches`** - every `if` / ternary whose condition evaluates to a build-time constant,
   recorded as which arm survives (`Then`, `Else`, or `Dead` - a falsey `if` with no `else`).
 
 ## Build-time constants (`Constants`)
 
-| Constant       | Source                                                                 |
-| -------------- | ---------------------------------------------------------------------- |
+| Constant | Source |
+| --- | --- |
 | `A_IsCompiled` | `--compiled <true\|false>`. **Off by default for `ahk`** - a bundled `.ahk` may later be compiled with ahk2exe, which would flip it. The future `exe` target defaults it to `true`. |
-| `A_PtrSize`    | `--bitness <32\|64>`, else derived from a bitness-pinned `#Requires` (e.g. `#Requires AutoHotkey v2.1-alpha.3 64-bit` ⇒ `8`), which is a certainty when present. |
+| `A_PtrSize` | `--bitness <32\|64>`, else derived from a bitness-pinned `#Requires` (e.g. `#Requires AutoHotkey v2.1-alpha.3 64-bit` ⇒ `8`), which is a certainty when present. |
 
 Each is `Option`: when unknown for the target, the corresponding built-in is left untouched. If
 no constant is known, the fold pass does not run and output is byte-for-byte unchanged.
@@ -45,16 +44,19 @@ constant yields `None` and is left alone (over-keeping a branch is always safe).
   separate boolean `ConstValue` variant.
 - **Unary** - `!` / `not`, `-`, `+`, `~`.
 - **Binary** - comparisons (`= == != <> < > <= >=`), arithmetic (`+ - * / // **`),
-  **short-circuit** logical (`&& || and or`), and explicit string concatenation (`.`).
-  Comparisons and arithmetic fold only over numbers, side-stepping AHK's string/number coercion
-  quirks (irrelevant to build-config guards). Implicit concatenation (adjacency) has an
-  unreliable operator span, so only the explicit `.` form folds.
+  **short-circuit** logical (`&& || and or`), and string concatenation - both explicit (`.`)
+  and implicit (adjacency, e.g. `"lib" A_PtrSize`). Comparisons and arithmetic fold only over
+  numbers, side-stepping AHK's string/number coercion quirks (irrelevant to build-config
+  guards). A parenthesized operand surfaces its inner node, so the concat operators (which
+  carry no `operator` field) recover their operator span by trimming whitespace and the
+  wrapping parens from the gap between operands - implicit concat lands on an empty span.
 - **Ternary** - folds the condition, then recurses into the taken arm.
 
 Short-circuiting is what makes branch shaking sound: `A_IsCompiled && Foo()` folds to `false`
 (when `A_IsCompiled` is false) **without** evaluating `Foo()`. Because a condition only folds
 when every non-constant part was short-circuited away and would never run, tree-shaking can
-safely discard the whole condition subtree.
+safely discard the whole condition subtree. We do not need to care whether `Foo` is effectful
+or not, because it would never run in the first place.
 
 ## How the results are used
 
@@ -63,8 +65,8 @@ safely discard the whole condition subtree.
 - **`emit`** produces span edits:
   - *Substitution* (rewrite): replace each `literals` (sub)expression's span with its rendered
     value, trimmed to the expression's non-whitespace extent so a command-style call's separator
-    space survives (`MsgBox A_PtrSize` -> `MsgBox 8`, not `MsgBox8`). Skipped when the span already
-    lies inside a deleted region (a collapsed branch's condition).
+    space survives (`MsgBox A_PtrSize` -> `MsgBox 8`, not `MsgBox8`). Skipped when the span is
+    already inside a deleted region (a collapsed branch's condition).
   - *Branch collapse* (deletion): delete the scaffolding around the surviving arm - the
     condition and dead arm - leaving the live arm's body in place so its own inner edits still
     apply. A braced block arm has its braces stripped too; a `Dead` `if` is removed whole.
@@ -79,3 +81,9 @@ safely discard the whole condition subtree.
 - **Cross-pass fixpoint.** `eval` is a pure function of the IR plus the known constants, so once
   inlining lands it can enrich that table and `fold` can re-run to a fixpoint, with `emit`
   staying a dumb renderer of the final side tables.
+- **Constant identification.** Constant folding only works over build-time constants right now,
+  but in the future, we should identify variables which are only assigned to once as constants and
+  replace them.
+  - Similarly, we should support and explicit `;ahkbuild-const` directive
+- **Exe target defaults.** The build-time constants should default to `compiled=true, bitness=<target>`
+  when the bundle target is a .exe.

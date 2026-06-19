@@ -110,9 +110,9 @@ fn collapse_inner_spaces(line: &str, out: &mut String) {
     while let Some(ch) = chars.next() {
         match quote {
             Some(q) => {
+                // in a string
                 out.push(ch);
-                if ch == q {
-                    // A doubled quote (`""`/`''`) is an escaped quote: consume both, stay open.
+                if ch == '`' {
                     if chars.peek() == Some(&q) {
                         out.push(chars.next().unwrap());
                     } else {
@@ -126,7 +126,7 @@ fn collapse_inner_spaces(line: &str, out: &mut String) {
                     quote = Some(ch);
                     out.push(ch);
                     prev_ws = false;
-                } else if ch == ' ' || ch == '\t' {
+                } else if ch.is_whitespace() {
                     if !prev_ws {
                         out.push(' ');
                     }
@@ -486,7 +486,7 @@ fn render_const(v: &ConstValue) -> String {
     match v {
         ConstValue::Int(i) => i.to_string(),
         ConstValue::Float(f) => f.to_string(),
-        ConstValue::Str(s) => format!("\"{}\"", s.replace('"', "\"\"")),
+        ConstValue::Str(s) => format!("\"{}\"", s.replace('"', "`\"")),
     }
 }
 
@@ -593,12 +593,11 @@ mod ws_tests {
     }
 
     #[test]
-    fn minify_handles_doubled_quote_escape() {
-        // The `""` is an escaped quote inside one string; the spaces stay literal.
-        let input = "s := \"a    \"\"    b\"\n";
+    fn minify_handles_backtick_quote_escape() {
+        let input = "s := \"a    `\"    b\"\n";
         assert_eq!(
             normalize_whitespace(input, WsLevel::Minify),
-            "s := \"a    \"\"    b\"\n"
+            "s := \"a    `\"    b\"\n"
         );
     }
 }

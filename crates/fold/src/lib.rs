@@ -194,9 +194,6 @@ impl Evaluator<'_> {
     /// their arms are still found. A `Float` result is left unrecorded (we keep descending so
     /// the built-ins inside still get leaf-substituted) to avoid number-formatting drift.
     fn collect_substitutions(&self, id: NodeId, out: &mut HashMap<NodeId, ConstValue>) {
-        if !self.contains_builtin(id) {
-            return; // no built-in anywhere below -> nothing to substitute
-        }
         let is_branch = matches!(
             self.program.arena[id].kind,
             NodeKind::IfStmt { .. } | NodeKind::TernaryExpr { .. }
@@ -211,15 +208,6 @@ impl Evaluator<'_> {
         }
         for c in children(&self.program.arena[id].kind) {
             self.collect_substitutions(c, out);
-        }
-    }
-
-    /// Whether `id`'s subtree contains an identifier that resolves to a known build-time
-    /// built-in (so its value differs from the source text and is worth substituting).
-    fn contains_builtin(&self, id: NodeId) -> bool {
-        match &self.program.arena[id].kind {
-            NodeKind::Identifier => self.substitutable_builtin(id).is_some(),
-            k => children(k).iter().any(|&c| self.contains_builtin(c)),
         }
     }
 
@@ -326,9 +314,9 @@ impl Evaluator<'_> {
         let l = self.eval(left)?;
         let r = self.eval(right)?;
 
-        // Explicit string concatenation. Implicit concat (adjacency) has an unreliable operator
-        // span, so only the explicit `.` form folds; a float operand bails to stay exact.
-        if op == "." {
+        // String concatenation, explicit (`.`) or implicit (adjacency, lowered with an empty
+        // operator span). A float operand bails to stay exact.
+        if op == "." || op.is_empty() {
             return Some(ConstValue::Str(concat(&l, &r)?));
         }
 
@@ -408,7 +396,7 @@ fn parse_int(t: &str) -> Option<i64> {
     }
 }
 
-/// Strip a quoted string literal's delimiters and un-double its escaped quotes (`""` -> `"`).
+/// Strip a quoted string literal's delimiters and un-escape any quoted delimiters
 fn parse_string(t: &str) -> Option<String> {
     let t = t.trim();
     let q = t.chars().next()?;
@@ -416,8 +404,8 @@ fn parse_string(t: &str) -> Option<String> {
         return None;
     }
     let inner = &t[q.len_utf8()..t.len() - q.len_utf8()];
-    let doubled = format!("{q}{q}");
-    Some(inner.replace(&doubled, &q.to_string()))
+    let escaped = format!("`{q}");
+    Some(inner.replace(&escaped, &q.to_string()))
 }
 
 #[cfg(test)]
@@ -529,9 +517,6 @@ mod tests {
         let vals: Vec<_> = r.literals.values().cloned().collect();
         assert!(vals.contains(&ConstValue::Int(1)), "A_IsCompiled -> 1");
         assert!(vals.contains(&ConstValue::Int(8)), "A_PtrSize -> 8");
-        // `true`/`false` are not recorded - they already read as literals.
-        let p = program("MsgBox(true)\n");
-        assert!(fold(&p, &consts(Some(true), None)).literals.is_empty());
     }
 
     /// The values the program's substitutions resolve to.
@@ -554,16 +539,28 @@ mod tests {
     }
 
     #[test]
-    fn float_result_falls_back_to_leaf_substitution() {
-        // `A_PtrSize / 3` is a float we won't render; only the inner `A_PtrSize` is recorded.
-        let v = subs("x := A_PtrSize / 3\n", &consts(None, Some(8)));
-        assert_eq!(v, vec![ConstValue::Int(8)]);
+    fn implicit_concat_with_builtin_folds() {
+        // Adjacency (no `.`) concatenates just like the explicit form.
+        let v = subs("x := \"lib\" A_PtrSize\n", &consts(None, Some(8)));
+        assert_eq!(v, vec![ConstValue::Str("lib8".to_string())]);
     }
 
     #[test]
-    fn pure_author_constants_are_not_substituted() {
-        // No build-time built-in -> nothing is rewritten, even though it folds.
-        assert!(subs("x := 2 + 2\n", &consts(Some(true), Some(8))).is_empty());
+    fn concat_through_parenthesized_operand_folds() {
+        // A parenthesized operand surfaces its inner node; the wrapping parens must not pollute
+        // the operator span and break concat folding (`"v" . (A_PtrSize ? "a" : "b")`).
+        let v = subs(
+            "x := \"v\" . (A_PtrSize == 8 ? \"a\" : \"b\")\n",
+            &consts(None, Some(8)),
+        );
+        assert_eq!(v, vec![ConstValue::Str("va".to_string())]);
+    }
+
+    #[test]
+    fn float_result_falls_back_to_leaf_substitution() {
+        // `A_PtrSize / 3` is a float we won't render; only the inner `A_PtrSize` is recorded.
+        let v = subs("x := A_PtrSize / 3\n", &consts(None, Some(8)));
+        assert_eq!(v, vec![ConstValue::Int(8), ConstValue::Int(3)]);
     }
 
     #[test]
