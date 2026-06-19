@@ -5,7 +5,7 @@
 //!
 //! [continuation sections]: https://www.autohotkey.com/docs/v2/Scripts.htm#continuation-section
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 
 mod lex;
 use lex::{ends_with_name_char, scan_line, split_lines};

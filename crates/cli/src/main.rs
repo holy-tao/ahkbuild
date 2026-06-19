@@ -31,6 +31,14 @@ enum BundleTarget {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Run the preprocessor over a file and emit the output
+    Preprocess {
+        /// The file to preprocess.
+        input: PathBuf,
+
+        /// The output file - leave blank to print to stdout.
+        output: Option<PathBuf>,
+    },
     /// Bundle a script into a single script or a .exe file
     Bundle {
         /// The output format to bundle to
@@ -66,6 +74,20 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let result = match &cli.command {
+        Commands::Preprocess { input, output } => {
+            let raw = std::fs::read_to_string(input)
+                .with_context(|| format!("reading {}", input.display()))?;
+            let processed = ahkbuild_preprocess::run(&input.to_string_lossy(), &raw)?;
+            match output {
+                Some(path) => {
+                    fs::write(path, processed)?;
+                }
+                None => {
+                    print!("{}", processed);
+                }
+            }
+            Ok(())
+        }
         Commands::Bundle {
             format,
             input,
@@ -82,8 +104,7 @@ fn main() -> Result<()> {
             if *ir || *sexp {
                 let raw = std::fs::read_to_string(input)
                     .with_context(|| format!("reading {}", input.display()))?;
-                let source =
-                    ahkbuild_preprocess::resolve_continuations(&input.to_string_lossy(), &raw)?;
+                let source = ahkbuild_preprocess::run(&input.to_string_lossy(), &raw)?;
 
                 let tree = ahkbuild_syntax::parse(&source).context("parser returned no tree")?;
                 let root = tree.root_node();
@@ -174,11 +195,10 @@ fn bundle_ahk(
     match output {
         Some(path) => {
             fs::write(path, bundled)?;
-            Ok(())
         }
         None => {
             print!("{}", bundled);
-            Ok(())
         }
     }
+    Ok(())
 }
