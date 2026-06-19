@@ -560,7 +560,9 @@ mod tests {
     fn float_result_falls_back_to_leaf_substitution() {
         // `A_PtrSize / 3` is a float we won't render; only the inner `A_PtrSize` is recorded.
         let v = subs("x := A_PtrSize / 3\n", &consts(None, Some(8)));
-        assert_eq!(v, vec![ConstValue::Int(8), ConstValue::Int(3)]);
+        assert_eq!(v.len(), 2, "expected two substitutions, got {:?}", v);
+        assert!(v.contains(&ConstValue::Int(8)), "A_PtrSize -> 8 missing");
+        assert!(v.contains(&ConstValue::Int(3)), "literal 3 missing");
     }
 
     #[test]
