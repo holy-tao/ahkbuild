@@ -51,7 +51,7 @@ Entry points are the roots of the reachability analysis. Everything transitively
 
 ## Reachability Analysis
 
-We do worklist-based reachability analysis. The four passes in `ahkbuild_shake::shake` are:
+We do worklist-based reachability analysis. The passes in `ahkbuild_shake::shake` are:
 
 1. **Resolve** (`shake::resolve::resolve`): Build per-module declaration tables and import-binding tables from the linked `Program` + `BundlePlan`. This is the foundation for name lookups during the mark phase.
 
@@ -73,7 +73,17 @@ We do worklist-based reachability analysis. The four passes in `ahkbuild_shake::
    - If it's a class, propagate liveness to member nodes. With a name table, only members whose names appear in the table (or are [protected meta-functions](#protected-meta-functions)) are included. Without one (blown up), all members are kept.
    - Track which `#Import` directives are "taken" (their bound name is used); taken imports load their target group, seeding its auto-execute roots.
 
-5. **Collect result**: The `ShakeResult` accumulates dead node IDs (`dead`), droppable `#Import` directives (`dropped_imports`), and dead module nodes (`dead_modules`). The emitter turns each into a span deletion.
+5. **Collect result** (`shake::assemble_result`): The `ShakeResult` accumulates dead node IDs (`dead`), droppable `#Import` directives (`dropped_imports`), and dead module nodes (`dead_modules`). The emitter turns each into a span deletion.
+
+This algorithm runs in a loop until a pass makes no changes.
+
+### Fixpoint: tree-shaking exposes more tree-shaking
+
+The member-name table (pass 2) is built over the **whole** program, so it counts `.Foo` references that live inside the very members, declarations, and modules this pass goes on to delete - keeping members alive that *only dead code* ever named. Declaration-level liveness has no such problem (a dead declaration's body is never walked, so its references already mark nothing live, making pass 4 a single-pass fixpoint on its own), but member pruning is over-conservative on the first pass.
+
+So `shake` iterates passes 3–5 to a fixpoint: once a marking round tells us exactly what dies, every member-name referencer lying inside a deleted node is stripped from the table (`MemberNameTable::remove_descendant_referencers`), `DefineProp` pruning re-runs against the smaller table, and the program is re-marked. This repeats until the table stops shrinking and no new `DefineProp` prunes. Each step only *removes* referencers (the table monotonically shrinks) and only *grows* the dead set, so it converges, and it is sound because a reference inside a node that is gone from the output genuinely cannot run. A [blown](#per-member-pruning) table skips the loop entirely - every class is kept whole, so there is nothing to refine.
+
+This is what lets a pruned method drag out a private helper it alone called: deleting `Unused()` strips its `this.Secret()` reference, after which `Secret()` is unreferenced and prunes too.
 
 ## Reference Tracking
 

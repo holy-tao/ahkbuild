@@ -86,6 +86,29 @@ fn unreferenced_method_is_pruned_referenced_one_kept() {
 }
 
 #[test]
+fn pruning_a_member_transitively_prunes_its_private_helper() {
+    // `Unused` is never referenced, so it prunes. Its body is the *only* place `Secret` is
+    // named, so once `Unused` is gone `Secret` is unreferenced too. A single pass over the
+    // whole-program member-name table would keep `Secret` (it sees the `.Secret` call inside
+    // `Unused`); the shake fixpoint strips that reference once `Unused` dies and prunes both.
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(
+        tmp.path(),
+        "main.ahk",
+        "o := C()\no.Used()\n\n\
+         class C {\n\
+         \x20   Used() {\n        this.Helper()\n    }\n\
+         \x20   Helper() {\n    }\n\
+         \x20   Unused() {\n        this.Secret()\n    }\n\
+         \x20   Secret() {\n    }\n\
+         }\n",
+    );
+    let (p, r) = run(&main);
+    let dead = dead_member_names(&p, &r);
+    assert_eq!(dead, names(&["Unused", "Secret"]), "got {dead:?}");
+}
+
+#[test]
 fn unreferenced_property_is_pruned() {
     let tmp = tempfile::tempdir().unwrap();
     let main = write(

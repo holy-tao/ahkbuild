@@ -108,6 +108,14 @@ impl MemberNameTable {
         None
     }
 
+    /// Total recorded referencer entries across the exact/prefix/suffix maps. Only ever
+    /// *decreases* as referencers inside dead code are stripped, so the shake fixpoint uses a
+    /// stable count to detect convergence.
+    pub fn referencer_count(&self) -> usize {
+        let sum = |m: &HashMap<String, Vec<NodeId>>| m.values().map(Vec::len).sum::<usize>();
+        sum(&self.exact) + sum(&self.prefixes) + sum(&self.suffixes)
+    }
+
     /// Drop every referencer that lies inside `parent`'s subtree, removing keys left empty.
     /// Used after a `DefineProp` call is pruned so names referenced only inside that call's
     /// descriptor become prunable too. Ports `RemoveDescendantReferencers`.

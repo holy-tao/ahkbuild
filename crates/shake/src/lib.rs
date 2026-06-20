@@ -68,20 +68,60 @@ pub fn shake(program: &Program, plan: &BundlePlan, fold: Option<&FoldResult>) ->
     // property names it never matches (this also strips those calls' descriptor referencers,
     // so a name used only inside a pruned call stops counting). Both run before marking.
     let mut table = members::collect(program);
-    let dead_defineprops = defineprop::prune(program, &mut table);
-
-    let reach = reach::mark(program, &resolved, &table, &dead_defineprops, fold);
-
-    let mut result = ShakeResult::default();
-    // Pruned DefineProp calls and unreferenced class members are deleted by their own spans.
-    result.dead.extend(dead_defineprops);
-    result.dead.extend(reach.dead_members.iter().copied());
+    let mut dead_defineprops = defineprop::prune(program, &mut table);
 
     // The entry module (main script's `__Main`) is the program; never remove it.
     let entry = program
         .groups
         .first()
         .and_then(|g| g.modules.first().copied());
+
+    let mut reach = reach::mark(program, &resolved, &table, &dead_defineprops, fold);
+    let mut result = assemble_result(program, &resolved, &reach, entry, &dead_defineprops);
+
+    // As long as the name table isn't blown, run the tree-shaking algorithm until it produces
+    // no additional dead nodes. It's guaranteed to converge because reference counts can only
+    // ever decrease (put another way, the dead set can only ever grow).
+    if !table.is_blown() {
+        loop {
+            let before = table.referencer_count();
+            for &n in &result.dead {
+                table.remove_descendant_referencers(n, program);
+            }
+            // Re-prune: a `DefineProp` name that now matches nothing becomes prunable too.
+            // `prune` re-scans, so its result is a superset of the old; union it in and note any
+            // genuinely new pruning (`insert` is true only for a not-yet-seen call).
+            let mut grew = false;
+            for n in defineprop::prune(program, &mut table) {
+                grew |= dead_defineprops.insert(n);
+            }
+
+            // Fixpoint: the table stopped shrinking and no new `DefineProp` pruned.
+            if table.referencer_count() == before && !grew {
+                break;
+            }
+            reach = reach::mark(program, &resolved, &table, &dead_defineprops, fold);
+            result = assemble_result(program, &resolved, &reach, entry, &dead_defineprops);
+        }
+    }
+
+    result
+}
+
+/// Assemble a [`ShakeResult`] from one marking pass: pruned `DefineProp` calls and dead members
+/// are deleted by their own spans, whole-dead modules are removed entirely (header + body), and
+/// every unreferenced declaration in a surviving module is dropped. Pure in its inputs, so the
+/// fixpoint loop can call it once per marking round.
+fn assemble_result(
+    program: &Program,
+    resolved: &resolve::Resolved,
+    reach: &reach::Reachability,
+    entry: Option<NodeId>,
+    dead_defineprops: &HashSet<NodeId>,
+) -> ShakeResult {
+    let mut result = ShakeResult::default();
+    result.dead.extend(dead_defineprops.iter().copied());
+    result.dead.extend(reach.dead_members.iter().copied());
 
     for &mref in &resolved.modules {
         let NodeKind::Module(module) = &program.arena[mref.module].kind else {
@@ -112,7 +152,7 @@ pub fn shake(program: &Program, plan: &BundlePlan, fold: Option<&FoldResult>) ->
         let group_loaded = reach.loaded.contains(&mref.group);
         let is_entry = Some(mref.module) == entry;
         if !is_entry && (!group_loaded || (!has_live && !has_kept_import)) {
-            // Nothing in this module survives — remove it whole.
+            // Nothing in this module survives - remove it whole.
             result.dead_modules.push(mref.module);
             result.dead.insert(mref.module); // its `#Module` header span
             result.dead.extend(module.body.iter().copied());
