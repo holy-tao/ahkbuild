@@ -388,26 +388,8 @@ fn extract_string_expr(
 /// The `;@AhkBuild-ResolvesTo` names attached to statement `stmt`, if any. Directives are keyed
 /// by the statement they precede (see `lower`).
 fn resolves_to(program: &Program, stmt: NodeId) -> Option<Vec<String>> {
-    let directives = program.directives.get(&stmt)?;
-    let d = directives.iter().find(|d| {
-        directive_name(program.span_text(d.name)).eq_ignore_ascii_case("ahkbuild-resolvesto")
-    })?;
-    let args = d.arguments.map(|s| program.span_text(s)).unwrap_or("");
+    let args = program.directive_arg(stmt, "ahkbuild-resolvesto")?;
     Some(parse_resolves_to(args))
-}
-
-/// Strip a leading `@`/`;` decoration from a directive name (`;@Name` lowers its `directive`
-/// field to either `Name` or `@Name` depending on the grammar).
-fn directive_name(raw: &str) -> &str {
-    raw.trim().trim_start_matches(['@', ';']).trim()
-}
-
-/// Whether statement/member `node` carries a `;@`-directive named `name` (case-insensitive).
-pub fn has_directive(program: &Program, node: NodeId, name: &str) -> bool {
-    program.directives.get(&node).is_some_and(|ds| {
-        ds.iter()
-            .any(|d| directive_name(program.span_text(d.name)).eq_ignore_ascii_case(name))
-    })
 }
 
 /// Parse a `;@AhkBuild-ResolvesTo` argument string into names: whitespace/comma-separated

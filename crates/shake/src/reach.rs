@@ -18,7 +18,7 @@ use std::collections::HashSet;
 use ahkbuild_fold::FoldResult;
 use ahkbuild_ir::{children, GroupId, NodeId, NodeKind, Program, Span};
 
-use crate::members::{has_directive, is_protected, MemberNameTable};
+use crate::members::{is_protected, MemberNameTable};
 use crate::resolve::{ModuleRef, Origin, Resolved};
 
 /// The outcome of marking: which nodes are live, which imports were used, and which groups
@@ -242,7 +242,7 @@ impl Marker<'_> {
             return true;
         };
         is_protected(&name)
-            || has_directive(self.program, m, "AhkBuild-Keep")
+            || self.program.has_directive(m, "AhkBuild-Keep")
             || self.table.matches(&name).is_some()
     }
 
