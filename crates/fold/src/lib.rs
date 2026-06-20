@@ -206,6 +206,20 @@ impl Evaluator<'_> {
                 }
             }
         }
+        // For static member access the property name is not a value expression - only recurse
+        // into the object. Dynamic access (%expr%) does evaluate the member, so descend both.
+        if let NodeKind::MemberAccess {
+            object,
+            member,
+            is_dynamic,
+        } = &self.program.arena[id].kind
+        {
+            self.collect_substitutions(*object, out);
+            if *is_dynamic {
+                self.collect_substitutions(*member, out);
+            }
+            return;
+        }
         for c in children(&self.program.arena[id].kind) {
             self.collect_substitutions(c, out);
         }
@@ -576,6 +590,21 @@ mod tests {
             .map(|(id, _)| id)
             .unwrap();
         assert_eq!(r.branches.get(&ternary), Some(&Branch::Else));
+    }
+
+    #[test]
+    fn property_name_true_false_not_substituted() {
+        // `MyObj.True` - `True` is a property name, not the boolean constant; must not fold.
+        let v = subs("x := MyObj.True\n", &consts(None, None));
+        assert!(
+            v.is_empty(),
+            "property name True must not be substituted, got {v:?}"
+        );
+        let v = subs("x := MyObj.False\n", &consts(None, None));
+        assert!(
+            v.is_empty(),
+            "property name False must not be substituted, got {v:?}"
+        );
     }
 
     #[test]
