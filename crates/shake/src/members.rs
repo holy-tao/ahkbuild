@@ -17,6 +17,7 @@
 
 use std::collections::HashMap;
 
+use ahkbuild_fold::{Branch, FoldResult};
 use ahkbuild_ir::node::{CallExpr, LiteralKind};
 use ahkbuild_ir::{children, NodeId, NodeKind, Program};
 
@@ -133,18 +134,61 @@ impl MemberNameTable {
 }
 
 /// Scan the whole program and build the member-name table.
-pub fn collect(program: &Program) -> MemberNameTable {
+///
+/// `fold` lets the scan honor [constant folding](ahkbuild_fold): a member referenced *only*
+/// inside a branch that folded to a build-time constant (e.g. `this._LoadLib32Bit()` in
+/// `A_PtrSize = 4 ? this._LoadLib32Bit() : …` on a 64-bit target) is never reachable, so it must
+/// not keep that member alive. We skip the condition and the dead arm, mirroring
+/// [`reach`](crate::reach)'s walk, so member pruning agrees with the branch the emitter keeps.
+pub fn collect(program: &Program, fold: Option<&FoldResult>) -> MemberNameTable {
     let mut table = MemberNameTable::default();
     for module in program.modules() {
-        collect_node(program, &mut table, module, module);
+        collect_node(program, &mut table, fold, module, module);
     }
     table
 }
 
+/// The surviving arm node(s) of an `if`/ternary whose condition folded to a build-time constant
+/// (empty for a dead `if` with no `else`), or `None` when `node` is not a resolved branch. Shared
+/// with the member-name scan and [`reach`](crate::reach) so both descend into the same arm.
+pub(crate) fn surviving_arm(
+    program: &Program,
+    fold: Option<&FoldResult>,
+    node: NodeId,
+) -> Option<Vec<NodeId>> {
+    let branch = fold?.branches.get(&node).copied()?;
+    match &program.arena[node].kind {
+        NodeKind::IfStmt {
+            then_body,
+            else_body,
+            ..
+        } => Some(match branch {
+            Branch::Then => vec![*then_body],
+            Branch::Else => else_body.iter().copied().collect(),
+            Branch::Dead => Vec::new(),
+        }),
+        NodeKind::TernaryExpr {
+            then_branch,
+            else_branch,
+            ..
+        } => Some(match branch {
+            Branch::Then => vec![*then_branch],
+            Branch::Else | Branch::Dead => vec![*else_branch],
+        }),
+        _ => None,
+    }
+}
+
 /// Walk `node`, recording any member names it references. `stmt` is the nearest enclosing
-/// directive-bearing statement (a module/block body element or a class member) — the node a
+/// directive-bearing statement (a module/block body element or a class member) - the node a
 /// `;@AhkBuild-ResolvesTo` directive would attach to.
-fn collect_node(program: &Program, table: &mut MemberNameTable, node: NodeId, stmt: NodeId) {
+fn collect_node(
+    program: &Program,
+    table: &mut MemberNameTable,
+    fold: Option<&FoldResult>,
+    node: NodeId,
+    stmt: NodeId,
+) {
     if table.is_blown() {
         return;
     }
@@ -163,6 +207,15 @@ fn collect_node(program: &Program, table: &mut MemberNameTable, node: NodeId, st
         _ => {}
     }
 
+    // A folded `if`/ternary: only the surviving arm can run, so collect names from it alone (the
+    // condition is a build-time constant and the dead arm is removed at emit).
+    if let Some(arm) = surviving_arm(program, fold, node) {
+        for child in arm {
+            collect_node(program, table, fold, child, stmt);
+        }
+        return;
+    }
+
     // Directives attach to body elements and class members (see `lower::attach_directives`):
     // descending into a block/module/type-decl makes each child its own enclosing statement.
     let descends_to_stmt = matches!(
@@ -174,7 +227,7 @@ fn collect_node(program: &Program, table: &mut MemberNameTable, node: NodeId, st
     );
     for child in children(&program.arena[node].kind) {
         let next = if descends_to_stmt { child } else { stmt };
-        collect_node(program, table, child, next);
+        collect_node(program, table, fold, child, next);
     }
 }
 

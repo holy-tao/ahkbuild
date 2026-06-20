@@ -105,7 +105,7 @@ Per-member pruning removes unused methods, properties, and fields from live clas
 
 ### How it works
 
-A `MemberNameTable` is built by walking the entire IR:
+A `MemberNameTable` is built by walking the entire IR. The walk **honors [constant folding](CONSTANT_FOLDING.md)**: for an `if`/ternary whose condition folded to a build-time constant it descends only into the surviving arm (the same `surviving_arm` helper `reach` uses), so a member named *only* inside a folded-away arm does not keep itself alive.
 
 | Source | What's collected |
 | --- | --- |

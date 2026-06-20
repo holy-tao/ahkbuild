@@ -67,7 +67,7 @@ pub fn shake(program: &Program, plan: &BundlePlan, fold: Option<&FoldResult>) ->
     // Build the program-wide member-name table, then prune standalone `DefineProp` calls whose
     // property names it never matches (this also strips those calls' descriptor referencers,
     // so a name used only inside a pruned call stops counting). Both run before marking.
-    let mut table = members::collect(program);
+    let mut table = members::collect(program, fold);
     let mut dead_defineprops = defineprop::prune(program, &mut table);
 
     // The entry module (main script's `__Main`) is the program; never remove it.
