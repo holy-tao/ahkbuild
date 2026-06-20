@@ -1075,14 +1075,17 @@ impl<'a> Lowerer<'a> {
             node.child_by_field_name("operator").map(|n| self.span(n))
         };
 
-        // Fall back to the gap between operands (covers implicit-concat whitespace).
         let (left, right) = (
             left.unwrap_or_else(|| self.alloc(node, NodeKind::Opaque)),
             right.unwrap_or_else(|| self.alloc(node, NodeKind::Opaque)),
         );
-        let op = op.unwrap_or(Span {
-            start: self.arena[left].span.end,
-            end: self.arena[right].span.start,
+        // Concat operations (`explicit_concat_operation` / `implicit_concat_operation`) carry no
+        // `operator` field, so fall back to the gap between operands. A parenthesized operand
+        // surfaces its *inner* node, leaving the wrapping `(`/`)` inside that gap (e.g.
+        // `"x" . (y)` -> gap `" . ("`); trim whitespace and parens so the span lands on the bare
+        // operator (`.`) - or an empty span for implicit concat, which folds on an empty op.
+        let op = op.unwrap_or_else(|| {
+            self.trim_operator_gap(self.arena[left].span.end, self.arena[right].span.start)
         });
 
         self.alloc(node, NodeKind::BinaryExpr { left, op, right })
@@ -1602,6 +1605,23 @@ impl<'a> Lowerer<'a> {
         Span {
             start: node.start_byte() as u32 + self.base,
             end: node.end_byte() as u32 + self.base,
+        }
+    }
+
+    /// Trim the (absolute) span `[start, end)` to the operator it brackets: drop leading and
+    /// trailing whitespace and parentheses. Used for the fieldless concat operators, where a
+    /// parenthesized operand otherwise leaks its `(`/`)` into the gap span. An all-whitespace
+    /// gap (implicit concat) collapses to an empty span at the trimmed start.
+    fn trim_operator_gap(&self, start: u32, end: u32) -> Span {
+        let (lo, hi) = ((start - self.base) as usize, (end - self.base) as usize);
+        let gap = &self.source[lo..hi];
+        let is_pad = |c: char| c.is_whitespace() || c == '(' || c == ')';
+        let lead = gap.len() - gap.trim_start_matches(is_pad).len();
+        let trimmed = gap.trim_matches(is_pad);
+        let op_start = start + lead as u32;
+        Span {
+            start: op_start,
+            end: op_start + trimmed.len() as u32,
         }
     }
 

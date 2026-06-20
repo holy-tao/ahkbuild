@@ -16,9 +16,11 @@ pub use search::{Builtins, SearchPath};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
+use ahkbuild_syntax::tree_sitter::TreeCursor;
+
 use ahkbuild_ir::node::Module;
 use ahkbuild_ir::{GroupId, Lowering, NodeId, NodeKind, Program};
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, ensure, Context, Result};
 
 /// Read a source file and resolve its continuation sections before it enters the
 /// pipeline. Doing this at the raw-text stage keeps the stored/parsed text and the
@@ -86,6 +88,8 @@ pub fn link_entry(entry: &Path, search: &SearchPath) -> Result<LinkOutput> {
     );
     queue.push_back(entry);
 
+    let mut errors: Vec<String> = Vec::new();
+
     while let Some(path) = queue.pop_front() {
         if loaded.contains_key(&path) {
             continue;
@@ -96,6 +100,14 @@ pub fn link_entry(entry: &Path, search: &SearchPath) -> Result<LinkOutput> {
         let (entry_file, entry_tree) = lowering
             .load(path.to_string_lossy().into_owned(), text.clone())
             .ok_or_else(|| anyhow!("parser returned no tree for {}", path.display()))?;
+
+        // Collect sytntax errors if we have any for later display
+        if entry_tree.root_node().has_error() {
+            let mut cursor = entry_tree.root_node().walk();
+            collect_errors(&mut cursor, &mut errors, &path.display().to_string());
+            break;
+        }
+
         let report = include::resolve_includes(
             &mut lowering,
             &builtins,
@@ -175,6 +187,15 @@ pub fn link_entry(entry: &Path, search: &SearchPath) -> Result<LinkOutput> {
             }
         }
     }
+
+    ensure!(
+        errors.is_empty(),
+        anyhow!(
+            "Encountered {} error(s) parsing file(s): {:#?}",
+            errors.len(),
+            errors
+        )
+    );
 
     let program = lowering.finish();
 
@@ -375,4 +396,36 @@ fn sanitize_ident(raw: &str) -> String {
 
 fn canonical(p: &Path) -> Result<PathBuf> {
     std::fs::canonicalize(p).with_context(|| format!("resolving {}", p.display()))
+}
+
+/// Collect all of the errors for the subtree of `cursor` into a vec of strings
+/// for later display
+fn collect_errors(cursor: &mut TreeCursor, errors: &mut Vec<String>, path: &str) {
+    let node = cursor.node();
+
+    // Check if this specific node is an ERROR or MISSING node
+    if node.is_error() {
+        let start = node.start_position();
+        errors.push(format!(
+            "{} - ERROR at line {}, col {}",
+            path, start.row, start.column
+        ));
+    } else if node.is_missing() {
+        let start = node.start_position();
+        errors.push(format!(
+            "{} - MISSING node at line {}, col {}",
+            path, start.row, start.column
+        ));
+    }
+
+    // Only recurse into branches that actually contain errors to optimize speed
+    if node.has_error() && cursor.goto_first_child() {
+        loop {
+            collect_errors(cursor, errors, path);
+            if !cursor.goto_next_sibling() {
+                break;
+            }
+        }
+        cursor.goto_parent();
+    }
 }

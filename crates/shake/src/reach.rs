@@ -15,6 +15,7 @@
 
 use std::collections::HashSet;
 
+use ahkbuild_fold::{Branch, FoldResult};
 use ahkbuild_ir::{children, GroupId, NodeId, NodeKind, Program, Span};
 
 use crate::members::{has_directive, is_protected, MemberNameTable};
@@ -41,12 +42,14 @@ pub fn mark(
     resolved: &Resolved,
     table: &MemberNameTable,
     dead_defineprops: &HashSet<NodeId>,
+    fold: Option<&FoldResult>,
 ) -> Reachability {
     let mut m = Marker {
         program,
         resolved,
         table,
         dead_defineprops,
+        fold,
         live: HashSet::new(),
         used_imports: HashSet::new(),
         loaded: HashSet::new(),
@@ -78,6 +81,10 @@ struct Marker<'a> {
     /// Standalone `DefineProp` calls pruned ahead of marking — a barrier: their subtrees are
     /// never walked, so references inside their descriptors are not followed.
     dead_defineprops: &'a HashSet<NodeId>,
+    /// Build-time constant folding results. For an `if`/ternary with a resolved branch, only
+    /// the surviving arm is walked (its condition and dead arm are skipped — both are removed
+    /// at emit, and a folded condition's non-constant parts were short-circuited, never run).
+    fold: Option<&'a FoldResult>,
     live: HashSet<NodeId>,
     used_imports: HashSet<NodeId>,
     /// Groups whose bodies are known to run. Seeded from the entry group and grown as taken
@@ -164,6 +171,12 @@ impl Marker<'_> {
                 continue;
             }
             self.resolve_edges(n, mref);
+            if let Some(arm) = self.branch_arm(n) {
+                // A folded `if`/ternary: walk only the surviving arm, skipping the condition
+                // and dead arm so declarations they alone reach can shake out.
+                stack.extend(arm);
+                continue;
+            }
             match self.member_descent(n) {
                 Some((keep, dead)) => {
                     self.dead_members.extend(dead);
@@ -171,6 +184,33 @@ impl Marker<'_> {
                 }
                 None => stack.extend(children(&self.program.arena[n].kind)),
             }
+        }
+    }
+
+    /// If `n` is an `if`/ternary whose condition folded to a build-time constant, the surviving
+    /// arm's node(s) — empty for a dead `if` with no `else`. `None` when `n` is not a resolved
+    /// branch (walk it normally).
+    fn branch_arm(&self, n: NodeId) -> Option<Vec<NodeId>> {
+        let branch = self.fold?.branches.get(&n).copied()?;
+        match &self.program.arena[n].kind {
+            NodeKind::IfStmt {
+                then_body,
+                else_body,
+                ..
+            } => Some(match branch {
+                Branch::Then => vec![*then_body],
+                Branch::Else => else_body.iter().copied().collect(),
+                Branch::Dead => Vec::new(),
+            }),
+            NodeKind::TernaryExpr {
+                then_branch,
+                else_branch,
+                ..
+            } => Some(match branch {
+                Branch::Then => vec![*then_branch],
+                Branch::Else | Branch::Dead => vec![*else_branch],
+            }),
+            _ => None,
         }
     }
 

@@ -5,6 +5,7 @@ members = [
     "crates/ir",
     "crates/preprocess",
     "crates/link",
+    "crates/fold",
     "crates/shake",
     "crates/emit",
     "crates/cli",
@@ -29,5 +30,6 @@ ahkbuild-syntax = { path = "crates/syntax" }
 ahkbuild-ir = { path = "crates/ir" }
 ahkbuild-preprocess = { path = "crates/preprocess" }
 ahkbuild-link = { path = "crates/link" }
+ahkbuild-fold = { path = "crates/fold" }
 ahkbuild-shake = { path = "crates/shake" }
 ahkbuild-emit = { path = "crates/emit" }

@@ -12,7 +12,7 @@ Source -> Preprocessor -> Link (CST + IR per file) -> [Tree-Shaking] -> Emitter 
 
 The tree-shaking pass (`ahkbuild_shake::shake`) runs after the linker has assembled the full multi-group `Program` and before emission. It returns a `ShakeResult` (sets of dead node IDs), which the emitter turns into span deletions. The IR is never mutated.
 
-In the future it should run *after* inlining and constant folding.
+It runs *after* [constant folding](CONSTANT_FOLDING.md): `shake` takes an optional `&FoldResult`, and for any `if`/ternary whose condition folded to a build-time constant it walks only the surviving arm. Declarations reachable only from a folded-away arm therefore shake out like any other dead code. (Inlining is still future.)
 
 ## Granularity
 
@@ -23,9 +23,10 @@ In the future it should run *after* inlining and constant folding.
 - **Modules**: A `#Module` block (or a whole imported file) is removed if none of its declarations survive and no live code depends on it.
 - **Labels**: A label is removed if unreferenced. Labels in the auto-execute section are always live.
 
+- **If / ternary branches**: when an `if`/ternary condition folds to a build-time constant, the dead arm is pruned and the surviving arm kept (braces stripped). Driven by [constant folding](CONSTANT_FOLDING.md); see there for the conditions that fold.
+
 ### Future plans
 
-- **If / ternary branches**: if an if statement or ternary expression's condition inlines/folds to a constant expression, prune the dead half
 - **loops**: if a loop inlines to 0 iterations or we can confidently determine that a for-loop iterates 0 items, delete it
 - **nitpicks**: low-effort, low-reward
   - property initializers that initialize values to `unset` can be pruned (TODO is this true in v2.1?)
