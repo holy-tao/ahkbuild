@@ -206,37 +206,12 @@ fn bundle_ahk(
         is_compiled: compiled,
         ptr_size,
     };
-    // Fold whenever we're optimizing (`--no-tree-shake` opts out for a faithful bundle).
-    // Pure-constant conditions (`if 2 + 2 == 4`) fold regardless of the flags; `A_IsCompiled`
-    // folds only when `--compiled` made its value known (the evaluator yields `None` otherwise).
-    let folded = tree_shake.then(|| ahkbuild_fold::fold(&out.program, &consts));
-    if let Some(f) = &folded {
-        eprintln!(
-            "constant folding: {} literal(s) substituted, {} branch(es) resolved",
-            f.literals.len(),
-            f.branches.len(),
-        );
-    }
 
-    // Tree-shake by default (dead-code elimination); `--no-tree-shake` opts out.
-    let shaken =
-        tree_shake.then(|| ahkbuild_shake::shake(&out.program, &out.plan, folded.as_ref()));
-    if let Some(s) = &shaken {
-        eprintln!(
-            "tree-shaking: {} dead node(s), {} dropped import(s), {} dead module(s)",
-            s.dead.len(),
-            s.dropped_imports.len(),
-            s.dead_modules.len(),
-        );
-    }
-
-    let bundled = ahkbuild_emit::emit_ahk(
-        &out.program,
-        &out.plan,
-        shaken.as_ref(),
-        folded.as_ref(),
-        emit_options,
-    );
+    // Hand off to the fixpoint driver, which runs constant folding and tree-shaking (when
+    // `tree_shake` is set; `--no-tree-shake` opts out for a faithful bundle) to a fixpoint and
+    // emits the final bundle. Pure-constant conditions (`if 2 + 2 == 4`) fold regardless of the
+    // flags; `A_IsCompiled` folds only when `--compiled` made its value known.
+    let bundled = ahkbuild_pipeline::bundle_ahk(out, consts, tree_shake, emit_options)?;
 
     match output {
         Some(path) => {
