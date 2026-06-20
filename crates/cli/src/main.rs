@@ -159,13 +159,7 @@ fn main() -> Result<()> {
         }
     };
 
-    match result {
-        Ok(()) => Ok(()),
-        Err(err) => {
-            eprint!("{}", err);
-            Err(err)
-        }
-    }
+    result
 }
 
 /// Bundle into a single .ahk file
