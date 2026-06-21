@@ -58,6 +58,45 @@ when every non-constant part was short-circuited away and would never run, tree-
 safely discard the whole condition subtree. We do not need to care whether `Foo` is effectful
 or not, because it would never run in the first place.
 
+## User-defined constants
+
+AHK has no `const`, but most "constants" are names assigned once and never reassigned (the
+classic `static FLAG := 0x1234` DllCall pattern) or getter-only fat-arrow properties. The
+`userconst` module detects these and feeds each **read site** into the evaluator as if it were a
+known constant, so the maximal-substitution and branch passes fold them with no extra machinery.
+It is run inside `fold` before the two passes above; `emit` and `shake` need no changes.
+
+Detection is conservative - it never folds a name it cannot prove is single-assignment with a
+constant value:
+
+- **Scope-aware binding.** Every name occurrence is resolved to the scope that *binds* it,
+  honouring AHK v2 closures: a nested function captures (reads **and** writes) an enclosing
+  *function's* locals, while the module-global scope never captures into a function. A binding
+  folds only with exactly one `:=` definer whose value folds.
+- **Disqualifiers.** A second assignment, a compound assignment (`+=`, `.=`, …), `++`/`--`, or
+  `&name` (taken by reference) - anywhere the binding is visible, including a capturing nested
+  function - leaves the name untouched.
+- **Dynamic writes.** An un-pinnable `%expr% := …` poisons every binding its scope can see. A
+  write whose target is a constant name (`%"Foo"%`, `pre%"x"%`) is treated as an ordinary write to
+  that resolved name instead.
+- **Getter-only properties.** `static Value => 42` folds **only** a `ClassName.Value` access - the
+  object must be an identifier naming the exact class that defines the getter. A bare `obj.Value`
+  is *not* folded: without the object's static type, `Value` could resolve to a different class's
+  member, a nested class, or a method (e.g. `MsgPack.Nil` is a nested class while
+  `MsgPackType.nil => 192` is a getter - folding every `.nil` would break `MsgPack.Nil()`). A
+  member is also left alone when blocked anywhere by a field/setter/member-assignment of that name,
+  a literal-named `DefineProp` for it, or *any* dynamically-named `DefineProp`.
+- **`;@ahkbuild-const` directive.** The explicit escape hatch: placed on a declaration, it folds
+  the binding on the author's word, skipping the single-assignment / dynamic / `DefineProp`
+  checks. Only the value still needs to fold.
+
+Detection runs to a **fixpoint**, so constants defined in terms of other constants resolve
+(`B := A + 1`, or a getter that reads a folded name).
+
+> Not yet handled: a now-unused constant's *declaration* is left in place. `shake` removes dead
+> top-level decls and class members but not function-local `static`s, so a fully-substituted local
+> constant's declaration survives. Dropping such declarations is a later enhancement.
+
 ## How the results are used
 
 - **`shake`** (`reach::walk`) descends only into the surviving arm of a resolved branch, so
@@ -81,9 +120,8 @@ or not, because it would never run in the first place.
 - **Cross-pass fixpoint.** `eval` is a pure function of the IR plus the known constants, so once
   inlining lands it can enrich that table and `fold` can re-run to a fixpoint, with `emit`
   staying a dumb renderer of the final side tables.
-- **Constant identification.** Constant folding only works over build-time constants right now,
-  but in the future, we should identify variables which are only assigned to once as constants and
-  replace them.
-  - Similarly, we should support and explicit `;ahkbuild-const` directive
+- **Drop substituted constant declarations.** A function-local `static` constant whose every read
+  was substituted still has its declaration emitted (see the note under
+  [User-defined constants](#user-defined-constants)).
 - **Exe target defaults.** The build-time constants should default to `compiled=true, bitness=<target>`
   when the bundle target is a .exe.
