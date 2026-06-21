@@ -26,10 +26,41 @@ struct Cli {
     command: Commands,
 }
 
-#[derive(ValueEnum, Debug, Clone)]
+#[derive(ValueEnum, Debug, Clone, Eq, PartialEq)]
 enum BundleTarget {
     Ahk,
     Exe,
+}
+
+#[derive(ValueEnum, Debug, Clone, Eq, PartialEq)]
+enum Bitness {
+    X32,
+    X64,
+}
+
+#[derive(Subcommand, Debug, Clone, Eq, PartialEq)]
+enum InterpreterCommand {
+    /// Install an interpreter
+    Install {
+        /// The AHK version to install (e.g. '2.1-alpha.16'), or 'latest'
+        version: String,
+
+        /// The bitness of the interpreter to install. If unspecified, both are cached
+        #[arg(long)]
+        bitness: Option<Bitness>,
+    },
+    /// List the interpreters ahkbuild knows about
+    List,
+    /// Remove cached interpreters
+    Prune {
+        /// The AHK version to remove, or 'latest'
+        #[arg(long)]
+        version: Option<String>,
+
+        /// The bitness of the interpreter to remove. If unspecified, both are removed
+        #[arg(long)]
+        bitness: Option<Bitness>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -80,6 +111,11 @@ enum Commands {
         #[cfg(debug_assertions)]
         #[arg(long)]
         sexp: bool,
+    },
+    /// Manage ahkbuild managed interpreters
+    Interpreter {
+        #[command(subcommand)]
+        command: InterpreterCommand,
     },
 }
 
@@ -161,6 +197,17 @@ fn main() -> Result<()> {
                 ),
             }
         }
+        Commands::Interpreter { command } => match command {
+            InterpreterCommand::Install { version, bitness } => {
+                todo!("Not implemented: install {:?} {:?}", version, bitness);
+            }
+            InterpreterCommand::List => {
+                todo!("Not implemented: list")
+            }
+            InterpreterCommand::Prune { version, bitness } => {
+                todo!("Not implemented: prune {:?} {:?}", version, bitness)
+            }
+        },
     };
 
     result
