@@ -9,7 +9,7 @@ use anyhow::Context;
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 
-use ahkbuild_interpret::AhkVersion;
+use ahkbuild_interpret::{AhkVersion, Bitness};
 
 mod bundle;
 
@@ -32,12 +32,6 @@ struct Cli {
 enum BundleTarget {
     Ahk,
     Exe,
-}
-
-#[derive(ValueEnum, Debug, Clone, Eq, PartialEq)]
-enum Bitness {
-    X32,
-    X64,
 }
 
 #[derive(Subcommand, Debug, Clone, Eq, PartialEq)]
@@ -201,7 +195,15 @@ fn main() -> Result<()> {
         }
         Commands::Interpreter { command } => match command {
             InterpreterCommand::Install { version, bitness } => {
-                todo!("Not implemented: install {:?} {:?}", version, bitness);
+                let targets = match bitness {
+                    Some(b) => vec![b.clone()],
+                    None => vec![Bitness::X32, Bitness::X64],
+                };
+                for b in targets {
+                    let path = ahkbuild_interpret::install(version, &b)?;
+                    println!("{}", path.display());
+                }
+                Ok(())
             }
             InterpreterCommand::List => {
                 todo!("Not implemented: list")
