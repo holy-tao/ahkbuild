@@ -10,8 +10,8 @@ dependencies = [
  "ahkbuild-fold",
  "ahkbuild-ir",
  "ahkbuild-link",
+ "ahkbuild-pipeline",
  "ahkbuild-preprocess",
- "ahkbuild-shake",
  "ahkbuild-syntax",
  "anyhow",
  "clap",
@@ -51,6 +51,20 @@ version = "0.1.0"
 dependencies = [
  "ahkbuild-ir",
  "ahkbuild-preprocess",
+ "ahkbuild-syntax",
+ "anyhow",
+ "tempfile",
+]
+
+[[package]]
+name = "ahkbuild-pipeline"
+version = "0.1.0"
+dependencies = [
+ "ahkbuild-emit",
+ "ahkbuild-fold",
+ "ahkbuild-ir",
+ "ahkbuild-link",
+ "ahkbuild-shake",
  "ahkbuild-syntax",
  "anyhow",
  "tempfile",

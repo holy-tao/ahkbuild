@@ -140,6 +140,26 @@ fn collapse_inner_spaces(line: &str, out: &mut String) {
     }
 }
 
+/// Structural edits produced by the (future) inliner: per-file span replacements that paste an
+/// inlined callee body over a call site. Defined here because they are emitter [`Edit`]s like
+/// any other producer's; the inliner lives in the pipeline driver and hands these to
+/// [`materialize`]. Empty today (inlining is not yet implemented), so [`is_empty`] is always
+/// true and the driver's outer re-parse loop runs exactly once.
+///
+/// [`is_empty`]: InlineEdits::is_empty
+#[derive(Debug, Default)]
+pub struct InlineEdits {
+    /// Replacement edits keyed by the file whose text each span falls in.
+    pub edits: HashMap<FileId, Vec<Edit>>,
+}
+
+impl InlineEdits {
+    /// Whether there is no structural work to apply (so no re-parse round is needed).
+    pub fn is_empty(&self) -> bool {
+        self.edits.values().all(|v| v.is_empty())
+    }
+}
+
 /// Emit a single self-contained `.ahk` bundle: the entry group's source, then each imported
 /// group wrapped in a `#Module Name` block, with every `#Include` spliced inline. Resolved
 /// `#Import`s are rewritten to name the in-file module, every module gets a program-unique
@@ -151,6 +171,10 @@ fn collapse_inner_spaces(line: &str, out: &mut String) {
 /// substitute build-time constants (`A_IsCompiled` -> `0`/`1`) and remove the dead arm of any
 /// `if`/ternary whose condition folded. [`EmitOptions`] carries the backend-neutral knobs
 /// (e.g. comment stripping, on by default).
+///
+/// This is the **final** renderer: it applies the cosmetic passes (comment stripping,
+/// whitespace normalization) on top of the structural/annotation edits. For an intermediate,
+/// re-parseable round inside the fixpoint driver, use [`materialize`] instead.
 pub fn emit_ahk(
     program: &Program,
     plan: &BundlePlan,
@@ -158,7 +182,49 @@ pub fn emit_ahk(
     fold: Option<&FoldResult>,
     options: &EmitOptions,
 ) -> String {
-    // Imports the shaker dropped must not also be rewritten — they're being deleted.
+    assemble(
+        program,
+        plan,
+        shake,
+        fold,
+        &InlineEdits::default(),
+        options.strip_comments,
+        options.whitespace,
+    )
+}
+
+/// Emit an **intermediate**, re-parseable bundle for one round of the fixpoint driver: the same
+/// structural and annotation edits as [`emit_ahk`] (import redirects, module renames, `#Include`
+/// splices, branch collapses, tree-shaking deletions, constant substitutions) plus the inliner's
+/// structural `inline` edits, but **without** the cosmetic passes - comments are kept and
+/// whitespace is left exactly as the edits produced it ([`WsLevel::Off`]). Skipping cosmetics is
+/// load-bearing: the output is fed back through the parser, so it must stay faithful and
+/// re-parseable (e.g. [`WsLevel::Minify`] assumes comments are already gone). Cosmetics run once,
+/// at the end, via [`emit_ahk`].
+pub fn materialize(
+    program: &Program,
+    plan: &BundlePlan,
+    shake: Option<&ShakeResult>,
+    fold: Option<&FoldResult>,
+    inline: &InlineEdits,
+) -> String {
+    assemble(program, plan, shake, fold, inline, false, WsLevel::Off)
+}
+
+/// Shared assembly core behind [`emit_ahk`] (final) and [`materialize`] (intermediate). Collects
+/// every edit producer, splices `#Include`s, wraps imported groups in `#Module` blocks, and
+/// applies `strip_comments` / `whitespace` cosmetics per the caller's mode.
+#[allow(clippy::too_many_arguments)]
+fn assemble(
+    program: &Program,
+    plan: &BundlePlan,
+    shake: Option<&ShakeResult>,
+    fold: Option<&FoldResult>,
+    inline: &InlineEdits,
+    strip_comments: bool,
+    whitespace: WsLevel,
+) -> String {
+    // Imports the shaker dropped must not also be rewritten - they're being deleted.
     let dropped: HashSet<NodeId> = shake
         .map(|s| s.dropped_imports.iter().copied().collect())
         .unwrap_or_default();
@@ -174,6 +240,14 @@ pub fn emit_ahk(
     // be suppressed for a file spliced in more than once (see `multiply_spliced`).
     let mut rewrites = import_edits(program, plan, &dropped);
     add_rename_edits(program, plan, &mut rewrites);
+    // The inliner's structural edits are rewrites (a call site replaced by the callee body); like
+    // other rewrites they are identical in every copy of a multiply-spliced file. Empty today.
+    for (file, es) in &inline.edits {
+        rewrites
+            .entry(*file)
+            .or_default()
+            .extend(es.iter().cloned());
+    }
     let mut deletions: HashMap<FileId, Vec<Edit>> = HashMap::new();
     if let Some(s) = shake {
         add_deletion_edits(program, s, &mut deletions);
@@ -182,7 +256,7 @@ pub fn emit_ahk(
         add_branch_edits(program, f, &mut deletions);
     }
 
-    if options.strip_comments {
+    if strip_comments {
         add_strip_comment_edits(program, &mut deletions);
     }
 
@@ -237,7 +311,7 @@ pub fn emit_ahk(
             }
         }
     }
-    normalize_whitespace(&out, options.whitespace)
+    normalize_whitespace(&out, whitespace)
 }
 
 /// Emit one file's text: its own rewrite (and, unless multiply-spliced, deletion) edits, plus

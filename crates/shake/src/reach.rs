@@ -15,7 +15,7 @@
 
 use std::collections::HashSet;
 
-use ahkbuild_fold::{Branch, FoldResult};
+use ahkbuild_fold::FoldResult;
 use ahkbuild_ir::{children, GroupId, NodeId, NodeKind, Program, Span};
 
 use crate::members::{has_directive, is_protected, MemberNameTable};
@@ -188,30 +188,11 @@ impl Marker<'_> {
     }
 
     /// If `n` is an `if`/ternary whose condition folded to a build-time constant, the surviving
-    /// arm's node(s) — empty for a dead `if` with no `else`. `None` when `n` is not a resolved
-    /// branch (walk it normally).
+    /// arm's node(s) - empty for a dead `if` with no `else`. `None` when `n` is not a resolved
+    /// branch (walk it normally). Shared with the [member-name scan](crate::members) so both keep
+    /// the same arm.
     fn branch_arm(&self, n: NodeId) -> Option<Vec<NodeId>> {
-        let branch = self.fold?.branches.get(&n).copied()?;
-        match &self.program.arena[n].kind {
-            NodeKind::IfStmt {
-                then_body,
-                else_body,
-                ..
-            } => Some(match branch {
-                Branch::Then => vec![*then_body],
-                Branch::Else => else_body.iter().copied().collect(),
-                Branch::Dead => Vec::new(),
-            }),
-            NodeKind::TernaryExpr {
-                then_branch,
-                else_branch,
-                ..
-            } => Some(match branch {
-                Branch::Then => vec![*then_branch],
-                Branch::Else | Branch::Dead => vec![*else_branch],
-            }),
-            _ => None,
-        }
+        crate::members::surviving_arm(self.program, self.fold, n)
     }
 
     /// If `n` is a live class/struct subject to per-member pruning, partition its members into

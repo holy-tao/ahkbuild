@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 
 use ahkbuild_syntax::tree_sitter::TreeCursor;
 
-use ahkbuild_ir::node::Module;
+use ahkbuild_ir::node::{ImportSource, Module};
 use ahkbuild_ir::{GroupId, Lowering, NodeId, NodeKind, Program};
 use anyhow::{anyhow, ensure, Context, Result};
 
@@ -297,6 +297,86 @@ pub fn link_entry(entry: &Path, search: &SearchPath) -> Result<LinkOutput> {
         },
         warnings,
     })
+}
+
+/// Re-link an already-bundled, single self-contained [`Program`] - the output of a prior emit
+/// round, re-parsed and re-lowered - into a fresh [`BundlePlan`], with **no file IO**.
+///
+/// A bundle is post-link: its `#Include`s are already spliced away, its module names are already
+/// final and unique, and every surviving `#Import` is an **in-group** reference to a `#Module`
+/// defined in the same program. So this only rebuilds the in-group import resolution (the
+/// `registry` + [`Resolution::InGroup`] half of [`link_entry`]); `module_names` is the identity
+/// of each module's own name and `resolved_includes` is empty. The fixpoint driver's outer
+/// (re-parse) loop calls this for every round after the first.
+pub fn link_bundle(program: Program) -> LinkOutput {
+    let mut warnings = Vec::new();
+
+    // `(group, lowercased module name) -> module node`, for resolving in-group import targets.
+    // First definition wins (a within-group reopen merges).
+    let mut registry: HashMap<(GroupId, String), NodeId> = HashMap::new();
+    // Module names are already final in a bundle: the plan's name map is the identity of each
+    // module's own name (entry primary stays `__Main`, emitted headerless).
+    let mut module_names: HashMap<(GroupId, NodeId), String> = HashMap::new();
+    for group in &program.groups {
+        for &mid in &group.modules {
+            if let NodeKind::Module(m) = &program.arena[mid].kind {
+                registry
+                    .entry((group.id, m.name.to_ascii_lowercase()))
+                    .or_insert(mid);
+                module_names.insert((group.id, mid), m.name.clone());
+            }
+        }
+    }
+
+    // Resolve every `#Import` to the in-group `#Module` it names, walking module bodies so each
+    // directive's owning group is known directly.
+    let mut resolved_imports = Vec::new();
+    for group in &program.groups {
+        for &mid in &group.modules {
+            let NodeKind::Module(m) = &program.arena[mid].kind else {
+                continue;
+            };
+            for &stmt in &m.body {
+                let NodeKind::ImportDirective(directive) = &program.arena[stmt].kind else {
+                    continue;
+                };
+                let spec_span = match &directive.source {
+                    ImportSource::Name(s) | ImportSource::Path(s) => *s,
+                };
+                let spec = program.span_text(spec_span);
+                // Embedded resources (`*RESNAME`) and the built-in `AHK` module name no in-group
+                // module; they stay as written, exactly as the file linker skips them.
+                if spec.starts_with('*') || spec.eq_ignore_ascii_case("ahk") {
+                    continue;
+                }
+                match registry.get(&(group.id, spec.to_ascii_lowercase())) {
+                    Some(&module) => resolved_imports.push(ResolvedImport {
+                        node: stmt,
+                        group: group.id,
+                        module,
+                    }),
+                    None => warnings.push(format!("bundle: unresolved in-group import \"{spec}\"")),
+                }
+            }
+        }
+    }
+
+    let units = program
+        .groups
+        .iter()
+        .map(|g| BundleUnit { group: g.id })
+        .collect();
+
+    LinkOutput {
+        program,
+        plan: BundlePlan {
+            units,
+            resolved_imports,
+            module_names,
+            resolved_includes: Vec::new(),
+        },
+        warnings,
+    }
 }
 
 /// Split a quoted import spec into `(path, Some(submodule))` for a path-qualified
