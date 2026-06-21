@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 
-use ahkbuild_fold::FoldResult;
+use ahkbuild_fold::{Branch, FoldResult};
 use ahkbuild_ir::node::{CallExpr, LiteralKind};
 use ahkbuild_ir::{children, NodeId, NodeKind, Program};
 
@@ -210,7 +210,7 @@ fn collect_node(
     // condition is a build-time constant and the dead arm is removed at emit).
     if let Some(arm) = surviving_arm(program, fold, node) {
         for child in arm {
-            collect_node(program, table, fold, child, stmt);
+            collect_node(program, table, child, stmt, fold);
         }
         return;
     }

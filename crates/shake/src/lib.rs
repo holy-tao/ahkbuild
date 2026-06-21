@@ -68,20 +68,13 @@ pub fn shake(program: &Program, plan: &BundlePlan, fold: Option<&FoldResult>) ->
     // property names it never matches (this also strips those calls' descriptor referencers,
     // so a name used only inside a pruned call stops counting). Both run before marking.
     let mut table = members::collect(program, fold);
-    let dead_defineprops = defineprop::prune(program, &mut table);
-
-    let reach = reach::mark(program, &resolved, &table, &dead_defineprops, fold);
+    let mut dead_defineprops = defineprop::prune(program, &mut table);
 
     // Variable/static constant declarations whose every read folded away (see `fold::userconst`).
     // They are auto-execute roots, so reachability keeps them live; we delete them outright.
     let dead_consts: HashSet<NodeId> = fold
         .map(|f| f.dead_consts.iter().copied().collect())
         .unwrap_or_default();
-
-    let mut result = ShakeResult::default();
-    // Pruned DefineProp calls and unreferenced class members are deleted by their own spans.
-    result.dead.extend(dead_defineprops);
-    result.dead.extend(reach.dead_members.iter().copied());
 
     // The entry module (main script's `__Main`) is the program; never remove it.
     let entry = program
@@ -90,7 +83,14 @@ pub fn shake(program: &Program, plan: &BundlePlan, fold: Option<&FoldResult>) ->
         .and_then(|g| g.modules.first().copied());
 
     let mut reach = reach::mark(program, &resolved, &table, &dead_defineprops, fold);
-    let mut result = assemble_result(program, &resolved, &reach, entry, &dead_defineprops);
+    let mut result = assemble_result(
+        program,
+        &resolved,
+        &reach,
+        entry,
+        &dead_defineprops,
+        &dead_consts,
+    );
 
     // As long as the name table isn't blown, run the tree-shaking algorithm until it produces
     // no additional dead nodes. It's guaranteed to converge because reference counts can only
@@ -114,7 +114,14 @@ pub fn shake(program: &Program, plan: &BundlePlan, fold: Option<&FoldResult>) ->
                 break;
             }
             reach = reach::mark(program, &resolved, &table, &dead_defineprops, fold);
-            result = assemble_result(program, &resolved, &reach, entry, &dead_defineprops);
+            result = assemble_result(
+                program,
+                &resolved,
+                &reach,
+                entry,
+                &dead_defineprops,
+                &dead_consts,
+            );
         }
     }
 
@@ -131,6 +138,7 @@ fn assemble_result(
     reach: &reach::Reachability,
     entry: Option<NodeId>,
     dead_defineprops: &HashSet<NodeId>,
+    dead_consts: &HashSet<NodeId>,
 ) -> ShakeResult {
     let mut result = ShakeResult::default();
     result.dead.extend(dead_defineprops.iter().copied());
