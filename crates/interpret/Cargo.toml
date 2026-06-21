@@ -1,0 +1,10 @@
+[package]
+name = "ahkbuild-interpret"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true

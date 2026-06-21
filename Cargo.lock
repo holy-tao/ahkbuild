@@ -8,6 +8,7 @@ version = "0.1.0"
 dependencies = [
  "ahkbuild-emit",
  "ahkbuild-fold",
+ "ahkbuild-interpret",
  "ahkbuild-ir",
  "ahkbuild-link",
  "ahkbuild-pipeline",
@@ -35,6 +36,13 @@ version = "0.1.0"
 dependencies = [
  "ahkbuild-ir",
  "ahkbuild-syntax",
+]
+
+[[package]]
+name = "ahkbuild-interpret"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
 ]
 
 [[package]]

@@ -18,5 +18,6 @@ ahkbuild-link.workspace = true
 ahkbuild-fold.workspace = true
 ahkbuild-emit.workspace = true
 ahkbuild-pipeline.workspace = true
+ahkbuild-interpret.workspace = true
 anyhow.workspace = true
 clap.workspace = true

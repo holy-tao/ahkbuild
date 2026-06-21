@@ -10,6 +10,7 @@ members = [
     "crates/emit",
     "crates/pipeline",
     "crates/cli",
+    "crates/interpret",
 ]
 exclude = ["vendor/tree-sitter-autohotkey"]
 
@@ -25,6 +26,7 @@ tree-sitter = "0.26"
 tree-sitter-autohotkey = { path = "vendor/tree-sitter-autohotkey" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+semver = "1.0.28"
 
 # Internal
 ahkbuild-syntax = { path = "crates/syntax" }
@@ -35,3 +37,4 @@ ahkbuild-fold = { path = "crates/fold" }
 ahkbuild-shake = { path = "crates/shake" }
 ahkbuild-emit = { path = "crates/emit" }
 ahkbuild-pipeline = { path = "crates/pipeline" }
+ahkbuild-interpret = { path = "crates/interpret" }

@@ -9,6 +9,8 @@ use anyhow::Context;
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 
+use ahkbuild_interpret::AhkVersion;
+
 mod bundle;
 
 use bundle::bundle_ahk;
@@ -42,8 +44,8 @@ enum Bitness {
 enum InterpreterCommand {
     /// Install an interpreter
     Install {
-        /// The AHK version to install (e.g. '2.1-alpha.16'), or 'latest'
-        version: String,
+        /// The AHK version to install (e.g. '2.1-alpha.16' or '2.0.24')
+        version: AhkVersion,
 
         /// The bitness of the interpreter to install. If unspecified, both are cached
         #[arg(long)]
@@ -53,9 +55,9 @@ enum InterpreterCommand {
     List,
     /// Remove cached interpreters
     Prune {
-        /// The AHK version to remove, or 'latest'
+        /// The AHK version to remove
         #[arg(long)]
-        version: Option<String>,
+        version: Option<AhkVersion>,
 
         /// The bitness of the interpreter to remove. If unspecified, both are removed
         #[arg(long)]
