@@ -71,13 +71,55 @@ fn path_import_is_rewritten_to_in_file_module_name() {
         &ahkbuild_emit::EmitOptions::default(),
     );
 
-    // The path spec is gone; the import now names the in-file module, alias preserved.
+    // The path spec is gone; the import now names the in-file module, alias preserved. The
+    // module name stays quoted to mirror the original quoted path (so its default-export
+    // semantics are unchanged - see `quoted_path_import_stays_quoted_to_avoid_name_clash`).
     assert!(
         !ahk.contains("lib/Greeter"),
         "path should be rewritten: {ahk}"
     );
-    assert!(ahk.contains("#Import Greeter as G"), "{ahk}");
+    assert!(ahk.contains("#Import \"Greeter\" as G"), "{ahk}");
     assert!(ahk.contains("\n#Module Greeter\n"), "{ahk}");
+}
+
+#[test]
+fn quoted_path_import_stays_quoted_to_avoid_name_clash() {
+    let tmp = tempfile::tempdir().unwrap();
+    // A selective import by quoted path, where the file stem (and so the assigned module name)
+    // matches an explicitly imported name. Rewriting the path to a *bare* `MsgPack` would make
+    // it `#Import MsgPack { MsgPack }`: an unquoted module name also pulls the module's default
+    // export into scope as `MsgPack`, clashing with the explicit `{ MsgPack }` - a load-time
+    // error. Keeping the spec quoted (`#Import "MsgPack" { MsgPack }`) suppresses the default
+    // import, so only the explicit name enters scope.
+    let main = write(
+        tmp.path(),
+        "main.ahk",
+        "#Import \"MsgPack.ahk\" { MsgPack }\nMsgPack.Encode()\n",
+    );
+    write(
+        tmp.path(),
+        "MsgPack.ahk",
+        "export class MsgPack {\n    static Encode() {\n        return 1\n    }\n}\n",
+    );
+
+    let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
+    let ahk = ahkbuild_emit::emit_ahk(
+        &out.program,
+        &out.plan,
+        None,
+        None,
+        &ahkbuild_emit::EmitOptions::default(),
+    );
+
+    assert!(
+        ahk.contains("#Import \"MsgPack\" { MsgPack }"),
+        "quoted spec must be preserved to avoid the default-export clash: {ahk}"
+    );
+    assert!(
+        !ahk.contains("#Import MsgPack {"),
+        "must not rewrite to a bare (unquoted) module name: {ahk}"
+    );
+    assert!(ahk.contains("\n#Module MsgPack\n"), "{ahk}");
 }
 
 #[test]
@@ -105,7 +147,7 @@ fn assigned_module_name_is_sanitized_to_a_valid_identifier() {
     );
 
     assert!(ahk.contains("\n#Module M3d_utils\n"), "{ahk}");
-    assert!(ahk.contains("#Import M3d_utils as U"), "{ahk}");
+    assert!(ahk.contains("#Import \"M3d_utils\" as U"), "{ahk}");
 }
 
 #[test]
@@ -132,8 +174,8 @@ fn same_stem_in_different_dirs_gets_unique_names() {
 
     assert!(ahk.contains("\n#Module Util\n"), "{ahk}");
     assert!(ahk.contains("\n#Module Util_2\n"), "{ahk}");
-    assert!(ahk.contains("#Import Util as A"), "{ahk}");
-    assert!(ahk.contains("#Import Util_2 as B"), "{ahk}");
+    assert!(ahk.contains("#Import \"Util\" as A"), "{ahk}");
+    assert!(ahk.contains("#Import \"Util_2\" as B"), "{ahk}");
 }
 
 #[test]
@@ -190,7 +232,7 @@ fn path_qualified_import_is_rewritten_to_submodule_name() {
         !ahk.contains("Thing:Inner"),
         "path spec should be gone: {ahk}"
     );
-    assert!(ahk.contains("#Import Inner as I"), "{ahk}");
+    assert!(ahk.contains("#Import \"Inner\" as I"), "{ahk}");
     assert!(ahk.contains("\n#Module Thing\n"), "{ahk}");
     assert!(ahk.contains("\n#Module Inner\n"), "{ahk}");
 }
@@ -226,7 +268,7 @@ fn submodule_colliding_with_group_name_is_renamed_and_redirected() {
     assert!(ahk.contains("\n#Module Foo_2\n"), "{ahk}");
     // The bare import of Foo is untouched; the path-qualified one points at the renamed module.
     assert!(ahk.contains("#Import Foo\n"), "{ahk}");
-    assert!(ahk.contains("#Import Foo_2 as BF"), "{ahk}");
+    assert!(ahk.contains("#Import \"Foo_2\" as BF"), "{ahk}");
 }
 
 #[test]

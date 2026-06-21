@@ -603,18 +603,25 @@ fn import_edits(
         let NodeKind::ImportDirective(directive) = &program.arena[ri.node].kind else {
             continue;
         };
-        let spec_span = match &directive.source {
-            ImportSource::Name(s) | ImportSource::Path(s) => *s,
+        // Preserve the original spec's quoting. A quoted `Path` (`#Import "foo.ahk" {X}`)
+        // does *not* bring the module's default export into scope; an unquoted `Name`
+        // (`#Import foo {X}`) does. Rewriting a quoted path to a *bare* module name would
+        // flip that, auto-importing the default export - which collides at load time when an
+        // explicitly-imported name matches the module name (e.g. `#Import MsgPack {MsgPack}`).
+        // Keep the path form quoted so only the explicit names enter scope.
+        let (spec_span, replacement) = match &directive.source {
+            ImportSource::Name(s) => (*s, target.to_string()),
+            ImportSource::Path(s) => (*s, format!("\"{target}\"")),
         };
-        // Already spelled exactly as the target module name: nothing to rewrite.
-        if program.span_text(spec_span) == target {
+        // Already spelled exactly as the target spec: nothing to rewrite.
+        if program.span_text(spec_span) == replacement {
             continue;
         }
         let file = program.sources.file_at(spec_span.start).id;
         edits
             .entry(file)
             .or_default()
-            .push(Edit::new(spec_span, target));
+            .push(Edit::new(spec_span, replacement));
     }
     edits
 }
