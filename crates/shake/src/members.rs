@@ -133,17 +133,13 @@ impl MemberNameTable {
     }
 }
 
-/// Scan the whole program and build the member-name table.
-///
-/// `fold` lets the scan honor [constant folding](ahkbuild_fold): a member referenced *only*
-/// inside a branch that folded to a build-time constant (e.g. `this._LoadLib32Bit()` in
-/// `A_PtrSize = 4 ? this._LoadLib32Bit() : …` on a 64-bit target) is never reachable, so it must
-/// not keep that member alive. We skip the condition and the dead arm, mirroring
-/// [`reach`](crate::reach)'s walk, so member pruning agrees with the branch the emitter keeps.
+/// Scan the whole program and build the member-name table. A member access that `fold` resolved
+/// to a literal (e.g. a getter-const `ClassName.Value`) is not counted as a reference, so an
+/// otherwise-unreferenced getter-only property can shake out.
 pub fn collect(program: &Program, fold: Option<&FoldResult>) -> MemberNameTable {
     let mut table = MemberNameTable::default();
     for module in program.modules() {
-        collect_node(program, &mut table, fold, module, module);
+        collect_node(program, &mut table, module, module, fold);
     }
     table
 }
@@ -185,9 +181,9 @@ pub(crate) fn surviving_arm(
 fn collect_node(
     program: &Program,
     table: &mut MemberNameTable,
-    fold: Option<&FoldResult>,
     node: NodeId,
     stmt: NodeId,
+    fold: Option<&FoldResult>,
 ) {
     if table.is_blown() {
         return;
@@ -196,11 +192,14 @@ fn collect_node(
         NodeKind::MemberAccess {
             member, is_dynamic, ..
         } => {
-            if *is_dynamic {
-                extract_dynamic_member(program, table, *member, stmt);
-            } else {
-                let name = program.text(*member).to_string();
-                table.add_exact(&name, node);
+            // A member access a user constant folded away is no longer a real reference.
+            if !fold.is_some_and(|f| f.folded_reads.contains(&node)) {
+                if *is_dynamic {
+                    extract_dynamic_member(program, table, *member, stmt);
+                } else {
+                    let name = program.text(*member).to_string();
+                    table.add_exact(&name, node);
+                }
             }
         }
         NodeKind::CallExpr(c) => check_reflection_call(program, table, c, node, stmt),
@@ -211,7 +210,7 @@ fn collect_node(
     // condition is a build-time constant and the dead arm is removed at emit).
     if let Some(arm) = surviving_arm(program, fold, node) {
         for child in arm {
-            collect_node(program, table, fold, child, stmt);
+            collect_node(program, table, child, stmt, fold);
         }
         return;
     }
@@ -227,7 +226,7 @@ fn collect_node(
     );
     for child in children(&program.arena[node].kind) {
         let next = if descends_to_stmt { child } else { stmt };
-        collect_node(program, table, fold, child, next);
+        collect_node(program, table, child, next, fold);
     }
 }
 
@@ -388,26 +387,8 @@ fn extract_string_expr(
 /// The `;@AhkBuild-ResolvesTo` names attached to statement `stmt`, if any. Directives are keyed
 /// by the statement they precede (see `lower`).
 fn resolves_to(program: &Program, stmt: NodeId) -> Option<Vec<String>> {
-    let directives = program.directives.get(&stmt)?;
-    let d = directives.iter().find(|d| {
-        directive_name(program.span_text(d.name)).eq_ignore_ascii_case("ahkbuild-resolvesto")
-    })?;
-    let args = d.arguments.map(|s| program.span_text(s)).unwrap_or("");
+    let args = program.directive_arg(stmt, "ahkbuild-resolvesto")?;
     Some(parse_resolves_to(args))
-}
-
-/// Strip a leading `@`/`;` decoration from a directive name (`;@Name` lowers its `directive`
-/// field to either `Name` or `@Name` depending on the grammar).
-fn directive_name(raw: &str) -> &str {
-    raw.trim().trim_start_matches(['@', ';']).trim()
-}
-
-/// Whether statement/member `node` carries a `;@`-directive named `name` (case-insensitive).
-pub fn has_directive(program: &Program, node: NodeId, name: &str) -> bool {
-    program.directives.get(&node).is_some_and(|ds| {
-        ds.iter()
-            .any(|d| directive_name(program.span_text(d.name)).eq_ignore_ascii_case(name))
-    })
 }
 
 /// Parse a `;@AhkBuild-ResolvesTo` argument string into names: whitespace/comma-separated

@@ -15,10 +15,12 @@
 //! call), which is exactly what makes discarding a folded condition's subtree sound - every
 //! non-constant part was guaranteed never to execute.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use ahkbuild_ir::node::LiteralKind;
 use ahkbuild_ir::{children, NodeId, NodeKind, Program};
+
+mod userconst;
 
 /// Build-time constant inputs. Each is `None` when the value is not known for the current
 /// target (e.g. `ptr_size` for a `.ahk` bundle with no bitness-pinned `#Requires`), in which
@@ -57,27 +59,49 @@ pub enum Branch {
 /// What [`fold`] found: constant (sub)expressions to substitute and branches to resolve.
 #[derive(Debug, Default)]
 pub struct FoldResult {
-    /// **Maximal** constant (sub)expressions that contain a known build-time built-in, mapped to
-    /// their value - the emitter rewrites each one's span to the rendered literal. "Maximal"
-    /// means the largest such expression: `A_PtrSize * 8` is recorded as `64`, not the inner
-    /// `A_PtrSize` as `8`. Pure author constants (`2 + 2`, `true`) are *not* recorded - only
-    /// expressions that fold *because of* a build-time constant.
+    /// **Maximal** constant (sub)expressions that fold, mapped to their value - the emitter
+    /// rewrites each one's span to the rendered literal. "Maximal" means the largest such
+    /// expression: `A_PtrSize * 8` is recorded as `64`, not the inner `A_PtrSize` as `8`. This
+    /// covers expressions that fold thanks to a build-time built-in (`A_PtrSize`), a detected
+    /// user constant (see [`userconst`]), or just author-side arithmetic (`2 + 2`).
     pub literals: HashMap<NodeId, ConstValue>,
     /// `IfStmt` / `TernaryExpr` nodes whose condition is build-time constant.
     pub branches: HashMap<NodeId, Branch>,
+    /// Read-site nodes (identifiers and static member accesses) that a detected user constant
+    /// folded away. Tree-shaking uses these to discount folded getter-const member accesses so the
+    /// property can be pruned. Distinct from [`Self::literals`], which keys *maximal* folded
+    /// expressions (`Consts.Value + 1`, not the inner `Consts.Value`).
+    pub folded_reads: HashSet<NodeId>,
+    /// Declaration statements of user constants whose every read folded away and that are safe to
+    /// delete: a non-exported constant that is either provably single-assignment with no dynamic
+    /// read, or author-trusted via `;@ahkbuild-const`. Shake folds these into its dead set.
+    pub dead_consts: HashSet<NodeId>,
 }
 
 impl FoldResult {
     /// Whether nothing was folded.
     pub fn is_empty(&self) -> bool {
-        self.literals.is_empty() && self.branches.is_empty()
+        self.literals.is_empty() && self.branches.is_empty() && self.dead_consts.is_empty()
     }
 }
 
 /// Fold build-time constants across `program` under the known `consts`.
 pub fn fold(program: &Program, consts: &Constants) -> FoldResult {
-    let ev = Evaluator { program, consts };
-    let mut result = FoldResult::default();
+    // Detect user-defined constants first (names assigned once and never reassigned, getter-only
+    // properties, and `;@ahkbuild-const`-marked bindings), resolving each read site to a value.
+    // The evaluator then treats those reads like any other constant, so substitution and branch
+    // resolution fall out of the existing passes below.
+    let user = userconst::collect(program, consts);
+    let ev = Evaluator {
+        program,
+        consts,
+        user_consts: &user.reads,
+    };
+    let mut result = FoldResult {
+        folded_reads: user.reads.keys().copied().collect(),
+        dead_consts: user.dead_consts,
+        ..Default::default()
+    };
 
     // (A) Maximal constant substitution: walk each module top-down, recording the largest
     // expressions that fold thanks to a build-time built-in (so `A_PtrSize * 8` is `64`, not
@@ -169,6 +193,10 @@ fn truthy(v: &ConstValue) -> bool {
 struct Evaluator<'a> {
     program: &'a Program,
     consts: &'a Constants,
+    /// Read-site node -> value for detected user constants (see [`userconst`]). Keyed by the
+    /// exact `Identifier` / `MemberAccess` read node so only those occurrences resolve; the
+    /// defining assignment's target is deliberately absent.
+    user_consts: &'a HashMap<NodeId, ConstValue>,
 }
 
 impl Evaluator<'_> {
@@ -228,6 +256,10 @@ impl Evaluator<'_> {
     /// Resolve an identifier to a constant value: the language constants `true`/`false`, plus
     /// any substitutable built-in known for the target.
     fn ident_value(&self, id: NodeId) -> Option<ConstValue> {
+        // A detected user constant's read site wins outright (it was resolved scope-aware).
+        if let Some(v) = self.user_consts.get(&id) {
+            return Some(v.clone());
+        }
         let name = self.program.text(id).trim();
         if name.eq_ignore_ascii_case("true") {
             return Some(ConstValue::Int(1));
@@ -268,6 +300,9 @@ impl Evaluator<'_> {
                     *else_branch
                 })
             }
+            // A getter-only property access resolved to a constant by `userconst` (e.g.
+            // `Consts.Value` -> `42`). Plain member accesses are otherwise un-foldable.
+            NodeKind::MemberAccess { .. } => self.user_consts.get(&id).cloned(),
             _ => None,
         }
     }

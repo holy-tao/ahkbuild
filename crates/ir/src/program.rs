@@ -66,4 +66,28 @@ impl Program {
     pub fn text(&self, id: NodeId) -> &str {
         self.span_text(self.arena[id].span)
     }
+
+    /// Whether statement/member `node` carries a `;@`-directive named `name` (case-insensitive).
+    pub fn has_directive(&self, node: NodeId, name: &str) -> bool {
+        self.directives.get(&node).is_some_and(|ds| {
+            ds.iter()
+                .any(|d| directive_name(self.span_text(d.name)).eq_ignore_ascii_case(name))
+        })
+    }
+
+    /// The argument text of `node`'s `;@Name` directive (empty string when the directive is
+    /// present with no arguments), or `None` when `node` carries no such directive.
+    pub fn directive_arg(&self, node: NodeId, name: &str) -> Option<&str> {
+        let ds = self.directives.get(&node)?;
+        let d = ds
+            .iter()
+            .find(|d| directive_name(self.span_text(d.name)).eq_ignore_ascii_case(name))?;
+        Some(d.arguments.map(|s| self.span_text(s)).unwrap_or(""))
+    }
+}
+
+/// Strip a leading `@`/`;` decoration from a directive name (`;@Name` lowers its `directive`
+/// field to either `Name` or `@Name` depending on the grammar).
+fn directive_name(raw: &str) -> &str {
+    raw.trim().trim_start_matches(['@', ';']).trim()
 }

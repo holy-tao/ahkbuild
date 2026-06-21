@@ -12,7 +12,7 @@ Source -> Preprocessor -> Link (CST + IR per file) -> [Tree-Shaking] -> Emitter 
 
 The tree-shaking pass (`ahkbuild_shake::shake`) runs after the linker has assembled the full multi-group `Program` and before emission. It returns a `ShakeResult` (sets of dead node IDs), which the emitter turns into span deletions. The IR is never mutated.
 
-It runs *after* [constant folding](CONSTANT_FOLDING.md): `shake` takes an optional `&FoldResult`, and for any `if`/ternary whose condition folded to a build-time constant it walks only the surviving arm. Declarations reachable only from a folded-away arm therefore shake out like any other dead code. (Inlining is still future.)
+It runs *after* [constant folding](CONSTANT_FOLDING.md): `shake` takes an optional `&FoldResult`, and for any `if`/ternary whose condition folded to a build-time constant it walks only the surviving arm. Declarations reachable only from a folded-away arm therefore shake out like any other dead code. The `FoldResult` also carries the [user constants](CONSTANT_FOLDING.md#declaration-removal) it folded: `shake` deletes the now-dead declaration statements (`dead_consts`) and discounts folded member accesses (`folded_reads`) when building its member-name table, so a fully-folded getter-only property prunes like any other unreferenced member. (Inlining is still future.)
 
 ## Granularity
 
@@ -22,6 +22,7 @@ It runs *after* [constant folding](CONSTANT_FOLDING.md): `shake` takes an option
 - **`#Import` directives**: If the bound name of an `#Import` is never referenced from live code, the directive is dropped. The target module still auto-executes if loaded by another path; a module reached *only* through unused imports is never loaded and shakes out whole.
 - **Modules**: A `#Module` block (or a whole imported file) is removed if none of its declarations survive and no live code depends on it.
 - **Labels**: A label is removed if unreferenced. Labels in the auto-execute section are always live.
+- **Folded constant declarations**: A variable/`static` constant whose every read was substituted to a literal by folding is deleted, even though it is an auto-execute statement, when removal is provably safe (see [Declaration removal](CONSTANT_FOLDING.md#declaration-removal)).
 
 - **If / ternary branches**: when an `if`/ternary condition folds to a build-time constant, the dead arm is pruned and the surviving arm kept (braces stripped). Driven by [constant folding](CONSTANT_FOLDING.md); see there for the conditions that fold.
 
