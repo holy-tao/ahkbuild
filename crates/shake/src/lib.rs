@@ -68,7 +68,20 @@ pub fn shake(program: &Program, plan: &BundlePlan, fold: Option<&FoldResult>) ->
     // property names it never matches (this also strips those calls' descriptor referencers,
     // so a name used only inside a pruned call stops counting). Both run before marking.
     let mut table = members::collect(program, fold);
-    let mut dead_defineprops = defineprop::prune(program, &mut table);
+    let dead_defineprops = defineprop::prune(program, &mut table);
+
+    let reach = reach::mark(program, &resolved, &table, &dead_defineprops, fold);
+
+    // Variable/static constant declarations whose every read folded away (see `fold::userconst`).
+    // They are auto-execute roots, so reachability keeps them live; we delete them outright.
+    let dead_consts: HashSet<NodeId> = fold
+        .map(|f| f.dead_consts.iter().copied().collect())
+        .unwrap_or_default();
+
+    let mut result = ShakeResult::default();
+    // Pruned DefineProp calls and unreferenced class members are deleted by their own spans.
+    result.dead.extend(dead_defineprops);
+    result.dead.extend(reach.dead_members.iter().copied());
 
     // The entry module (main script's `__Main`) is the program; never remove it.
     let entry = program
@@ -142,7 +155,7 @@ fn assemble_result(
                 } else {
                     has_kept_import = true;
                 }
-            } else if reach.live.contains(&stmt) {
+            } else if reach.live.contains(&stmt) && !dead_consts.contains(&stmt) {
                 has_live = true;
             }
         }
@@ -165,6 +178,10 @@ fn assemble_result(
             result.dropped_imports.extend(local_dropped);
         }
     }
+
+    // Delete the folded-away constant declarations. Statements inside a fully-dead module are
+    // already covered by its body deletion above; re-inserting is harmless (a `HashSet`).
+    result.dead.extend(dead_consts);
 
     result
 }

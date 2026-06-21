@@ -64,7 +64,9 @@ AHK has no `const`, but most "constants" are names assigned once and never reass
 classic `static FLAG := 0x1234` DllCall pattern) or getter-only fat-arrow properties. The
 `userconst` module detects these and feeds each **read site** into the evaluator as if it were a
 known constant, so the maximal-substitution and branch passes fold them with no extra machinery.
-It is run inside `fold` before the two passes above; `emit` and `shake` need no changes.
+It is run inside `fold` before the two passes above. It also surfaces, for `shake`, the read sites
+it folded (`FoldResult.folded_reads`) and the declaration statements that are now dead
+(`FoldResult.dead_consts`) - see [Declaration removal](#declaration-removal).
 
 Detection is conservative - it never folds a name it cannot prove is single-assignment with a
 constant value:
@@ -93,14 +95,30 @@ constant value:
 Detection runs to a **fixpoint**, so constants defined in terms of other constants resolve
 (`B := A + 1`, or a getter that reads a folded name).
 
-> Not yet handled: a now-unused constant's *declaration* is left in place. `shake` removes dead
-> top-level decls and class members but not function-local `static`s, so a fully-substituted local
-> constant's declaration survives. Dropping such declarations is a later enhancement.
+### Declaration removal
+
+Once *every* read of a constant has been folded to a literal, its declaration is dead weight.
+`userconst` reports the safe-to-delete declarations in `FoldResult.dead_consts` and `shake` deletes
+them (they are auto-execute roots it would otherwise always keep). Removal is conservative on top of
+the folding gates above:
+
+- **Structural guard (always).** An `export`ed constant is public API the bundler can't see all
+  uses of, so it is never removed - even under a directive. The declaration must also be a lone
+  `name := <expr>` / `local|static name := <expr>` statement, never a nested or compound assignment.
+- **Provability guards (non-directive).** Removed only when single-assignment *and* no dynamic read
+  (`%expr%`) could reach the binding - a dynamic read needs the variable to still exist at runtime,
+  even though the static reads fold. A `;@ahkbuild-const` directive bypasses these (author's word);
+  all its `:=` writes are deleted.
+
+Getter-only properties take a different route: `shake` discounts their folded accesses
+(`FoldResult.folded_reads`) when building its member-name table, so an otherwise-unreferenced
+property shakes out through ordinary [per-member pruning](TREE_SHAKING.md#per-member-pruning).
 
 ## How the results are used
 
 - **`shake`** (`reach::walk`) descends only into the surviving arm of a resolved branch, so
-  declarations reachable only from a dead arm shake out. See [TREE_SHAKING.md](TREE_SHAKING.md).
+  declarations reachable only from a dead arm shake out. It also deletes `dead_consts` declarations
+  and discounts `folded_reads` member accesses. See [TREE_SHAKING.md](TREE_SHAKING.md).
 - **`emit`** produces span edits:
   - *Substitution* (rewrite): replace each `literals` (sub)expression's span with its rendered
     value, trimmed to the expression's non-whitespace extent so a command-style call's separator
@@ -120,8 +138,9 @@ Detection runs to a **fixpoint**, so constants defined in terms of other constan
 - **Cross-pass fixpoint.** `eval` is a pure function of the IR plus the known constants, so once
   inlining lands it can enrich that table and `fold` can re-run to a fixpoint, with `emit`
   staying a dumb renderer of the final side tables.
-- **Drop substituted constant declarations.** A function-local `static` constant whose every read
-  was substituted still has its declaration emitted (see the note under
-  [User-defined constants](#user-defined-constants)).
+- **Drop emptied getter-const classes.** A class whose only members were folded-away getter
+  constants is left as an empty `class` shell - reachability still sees the class-name identifier in
+  the pre-fold IR. Teaching `reach` to skip the subtree of a `folded_reads` access would let it
+  shake out too.
 - **Exe target defaults.** The build-time constants should default to `compiled=true, bitness=<target>`
   when the bundle target is a .exe.

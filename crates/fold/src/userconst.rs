@@ -19,12 +19,13 @@ use crate::{ConstValue, Constants, Evaluator};
 
 const DIRECTIVE: &str = "ahkbuild-const";
 
-/// Detect user constants in `program` and return a map from each read-site node to its value.
-pub fn collect(program: &Program, consts: &Constants) -> HashMap<NodeId, ConstValue> {
+/// Detect user constants in `program` and return each read-site node's value plus the declaration
+/// statements that become dead once every read folds.
+pub fn collect(program: &Program, consts: &Constants) -> UserConsts {
     let mut b = Builder::new(program);
     for m in program.modules() {
         let s = b.new_scope(None, true);
-        b.walk(m, s);
+        b.walk(m, s, m);
     }
     let binds = b.analyze();
     let members = Members::collect(program);
@@ -32,8 +33,8 @@ pub fn collect(program: &Program, consts: &Constants) -> HashMap<NodeId, ConstVa
     let mut cands = b.var_candidates(&binds);
     cands.extend(members.candidates());
 
-    // Resolve constants until a pass produces no additional chanbges
-    let mut out: HashMap<NodeId, ConstValue> = HashMap::new();
+    // Resolve constants until a pass produces no additional changes.
+    let mut result = UserConsts::default();
     let mut pending: Vec<Candidate> = cands;
     loop {
         let mut resolved = Vec::new();
@@ -41,7 +42,7 @@ pub fn collect(program: &Program, consts: &Constants) -> HashMap<NodeId, ConstVa
             let ev = Evaluator {
                 program,
                 consts,
-                user_consts: &out,
+                user_consts: &result.reads,
             };
             for (i, c) in pending.iter().enumerate() {
                 if let Some(v) = ev.eval(c.expr) {
@@ -55,12 +56,16 @@ pub fn collect(program: &Program, consts: &Constants) -> HashMap<NodeId, ConstVa
         // Apply in reverse index order so swap_remove keeps the remaining indices valid.
         for (i, v) in resolved.iter().rev() {
             for &site in &pending[*i].reads {
-                out.insert(site, v.clone());
+                result.reads.insert(site, v.clone());
             }
+            // Every read folded, so the declaration is now dead (when it is safe to delete).
+            result
+                .dead_consts
+                .extend(pending[*i].removable.iter().copied());
             pending.swap_remove(*i);
         }
     }
-    out
+    result
 }
 
 /// A constant to resolve
@@ -69,6 +74,17 @@ struct Candidate {
     expr: NodeId,
     /// Nodes to replace when folding `expr`
     reads: Vec<NodeId>,
+    /// Statement(s) to delete once `expr` folds (the constant's whole declaration). Empty for
+    /// getter-property candidates and for variable bindings that aren't safe to delete.
+    removable: Vec<NodeId>,
+}
+
+/// What [`collect`] found: the read-site -> value map (fed to the evaluator) and the set of
+/// declaration statements whose every read folded and that are safe to delete.
+#[derive(Default)]
+pub struct UserConsts {
+    pub reads: HashMap<NodeId, ConstValue>,
+    pub dead_consts: HashSet<NodeId>,
 }
 
 /// One function-like scope (module / function / arrow body).
@@ -89,6 +105,10 @@ struct Scope {
     bound: HashSet<String>,
     /// Whether an un-pinnable dynamic write (`%expr% := …`) occurs in this scope's region.
     dynamic_write: bool,
+    /// Whether a dynamic *read* (`%expr%`) occurs in this scope's region. It could read any
+    /// visible name, so a binding it can reach must not have its declaration deleted (folding the
+    /// static reads is still safe). Conservative: any deref read sets this, pinned or not.
+    dynamic_read: bool,
 }
 
 /// One occurrence of a name, before it is resolved to a binding.
@@ -97,6 +117,9 @@ struct Occurrence {
     name: String,
     /// For a read: the `Identifier` node (the substitution site). For a definer: the `:=` RHS.
     node: NodeId,
+    /// The enclosing statement (a module/block body element). Used to delete a fully-folded
+    /// constant's whole declaration.
+    stmt: NodeId,
     kind: OccKind,
 }
 
@@ -110,10 +133,14 @@ enum OccKind {
 #[derive(Default)]
 struct Binding {
     definers: Vec<NodeId>,
+    /// The statement node enclosing each definer, in lockstep with `definers`.
+    definer_stmts: Vec<NodeId>,
     reads: Vec<NodeId>,
     disqualified: bool,
     /// Reachable by an un-pinnable dynamic write.
     tainted: bool,
+    /// Reachable by a dynamic read - blocks deleting the declaration (folding is still fine).
+    read_tainted: bool,
     /// Marked `;@ahkbuild-const` - fold on the author's word.
     directive: bool,
 }
@@ -150,21 +177,29 @@ impl<'a> Builder<'a> {
         self.program.text(id).trim().to_ascii_lowercase()
     }
 
-    fn read(&mut self, scope: usize, id: NodeId) {
+    fn read(&mut self, scope: usize, id: NodeId, stmt: NodeId) {
         let name = self.name(id);
         if !name.is_empty() {
             self.occurrences.push(Occurrence {
                 scope,
                 name,
                 node: id,
+                stmt,
                 kind: OccKind::Read,
             });
         }
     }
 
     /// Record a write of `name` in `scope`: a `:=` definer carries its `rhs`; anything else
-    /// disqualifies.
-    fn record_write(&mut self, scope: usize, name: String, rhs: NodeId, is_definer: bool) {
+    /// disqualifies. `stmt` is the enclosing statement (used to delete a folded constant's decl).
+    fn record_write(
+        &mut self,
+        scope: usize,
+        name: String,
+        rhs: NodeId,
+        is_definer: bool,
+        stmt: NodeId,
+    ) {
         if name.is_empty() {
             return;
         }
@@ -178,6 +213,7 @@ impl<'a> Builder<'a> {
             scope,
             name,
             node: rhs,
+            stmt,
             kind,
         });
     }
@@ -192,8 +228,9 @@ impl<'a> Builder<'a> {
         };
     }
 
-    /// Walk `id` as an expression/statement in read position under `scope`.
-    fn walk(&mut self, id: NodeId, scope: usize) {
+    /// Walk `id` as an expression/statement in read position under `scope`. `stmt` is the
+    /// enclosing statement; it resets to each child when descending a block or module body.
+    fn walk(&mut self, id: NodeId, scope: usize, stmt: NodeId) {
         self.node_scope.insert(id, scope);
         let kind = self.program.arena[id].kind.clone();
         match kind {
@@ -205,11 +242,11 @@ impl<'a> Builder<'a> {
                         self.scopes[child].params.insert(n);
                     }
                     if let Some(d) = p.default {
-                        self.walk(d, child);
+                        self.walk(d, child, d);
                     }
                 }
                 if let Some(body) = f.body {
-                    self.walk(body, child);
+                    self.walk(body, child, body);
                 }
             }
             NodeKind::FatArrow { params, body } => {
@@ -220,31 +257,31 @@ impl<'a> Builder<'a> {
                         self.scopes[child].params.insert(n);
                     }
                     if let Some(d) = p.default {
-                        self.walk(d, child);
+                        self.walk(d, child, d);
                     }
                 }
-                self.walk(body, child);
+                self.walk(body, child, body);
             }
             NodeKind::VarDecl(v) => {
                 self.declare_var(&v, scope);
                 if let (Some(name), Some(init)) = (v.name, v.initializer) {
                     let n = self.program.span_text(name).trim().to_ascii_lowercase();
-                    self.record_write(scope, n, init, true);
+                    self.record_write(scope, n, init, true, stmt);
                 }
                 if let Some(init) = v.initializer {
-                    self.walk(init, scope);
+                    self.walk(init, scope, stmt);
                 }
             }
             NodeKind::BinaryExpr { left, op, right } => {
                 let op = self.program.span_text(op).trim().to_string();
                 match assign_kind(&op) {
                     Some(is_definer) => {
-                        self.assign_target(left, right, is_definer, scope);
-                        self.walk(right, scope);
+                        self.assign_target(left, right, is_definer, scope, stmt);
+                        self.walk(right, scope, stmt);
                     }
                     None => {
-                        self.walk(left, scope);
-                        self.walk(right, scope);
+                        self.walk(left, scope, stmt);
+                        self.walk(right, scope, stmt);
                     }
                 }
             }
@@ -254,17 +291,17 @@ impl<'a> Builder<'a> {
                     && matches!(self.program.arena[operand].kind, NodeKind::Identifier)
                 {
                     let n = self.name(operand);
-                    self.record_write(scope, n, operand, false);
+                    self.record_write(scope, n, operand, false, stmt);
                 } else {
-                    self.walk(operand, scope);
+                    self.walk(operand, scope, stmt);
                 }
             }
             NodeKind::VarRefExpr { operand } => {
                 if matches!(self.program.arena[operand].kind, NodeKind::Identifier) {
                     let n = self.name(operand);
-                    self.record_write(scope, n, operand, false);
+                    self.record_write(scope, n, operand, false, stmt);
                 } else {
-                    self.walk(operand, scope);
+                    self.walk(operand, scope, stmt);
                 }
             }
             NodeKind::MemberAccess {
@@ -272,34 +309,57 @@ impl<'a> Builder<'a> {
                 member,
                 is_dynamic,
             } => {
-                self.walk(object, scope);
+                self.walk(object, scope, stmt);
                 if is_dynamic {
-                    self.walk(member, scope);
+                    self.walk(member, scope, stmt);
+                }
+            }
+            // A dynamic read (`%expr%`) could read any visible name. It doesn't disqualify
+            // folding (the static reads still fold), but it blocks deleting a reachable
+            // declaration, so poison the scope for removal.
+            NodeKind::DerefExpr { .. } | NodeKind::DynamicIdentifier { .. } => {
+                self.scopes[scope].dynamic_read = true;
+                for c in children(&self.program.arena[id].kind) {
+                    self.walk(c, scope, stmt);
                 }
             }
             NodeKind::ObjectLiteral { members } => {
                 // Keys are member names, not variable reads; only values reference variables.
                 for m in &members {
                     if let Some(v) = m.value {
-                        self.walk(v, scope);
+                        self.walk(v, scope, stmt);
                     }
                 }
             }
-            NodeKind::Identifier => self.read(scope, id),
+            NodeKind::Identifier => self.read(scope, id, stmt),
             _ => {
+                // Block/module bodies introduce fresh statements; everything else inherits `stmt`.
+                let descends = matches!(
+                    self.program.arena[id].kind,
+                    NodeKind::Block { .. } | NodeKind::Module(_)
+                );
                 for c in children(&self.program.arena[id].kind) {
-                    self.walk(c, scope);
+                    let next = if descends { c } else { stmt };
+                    self.walk(c, scope, next);
                 }
             }
         }
     }
 
-    /// Classify an assignment `target <op> rhs` (`is_definer` = the plain `:=` form).
-    fn assign_target(&mut self, target: NodeId, rhs: NodeId, is_definer: bool, scope: usize) {
+    /// Classify an assignment `target <op> rhs` (`is_definer` = the plain `:=` form). `stmt` is the
+    /// enclosing statement.
+    fn assign_target(
+        &mut self,
+        target: NodeId,
+        rhs: NodeId,
+        is_definer: bool,
+        scope: usize,
+        stmt: NodeId,
+    ) {
         match &self.program.arena[target].kind {
             NodeKind::Identifier => {
                 let n = self.name(target);
-                self.record_write(scope, n, rhs, is_definer);
+                self.record_write(scope, n, rhs, is_definer, stmt);
             }
             // `static x := …` / `local x := …` / `global x := …` lower the *target* to a `VarDecl`.
             NodeKind::VarDecl(v) => {
@@ -307,20 +367,20 @@ impl<'a> Builder<'a> {
                 self.declare_var(&v, scope);
                 if let Some(s) = v.name {
                     let n = self.program.span_text(s).trim().to_ascii_lowercase();
-                    self.record_write(scope, n, rhs, is_definer);
+                    self.record_write(scope, n, rhs, is_definer, stmt);
                 }
             }
             NodeKind::DynamicIdentifier { .. } | NodeKind::DerefExpr { .. } => {
                 match self.const_target_name(target) {
                     // A pinned dynamic write (`%"Foo"% := …`): an ordinary write to `Foo`.
-                    Some(n) => self.record_write(scope, n, target, false),
+                    Some(n) => self.record_write(scope, n, target, false, stmt),
                     // Un-pinnable: it could write anything visible here, so poison the scope.
                     None => self.scopes[scope].dynamic_write = true,
                 }
             }
             // `obj.M := …` / `arr[i] := …` write a member/element, not a variable; the object is
             // still read. Member assignments are handled by the member-constant pass.
-            _ => self.walk(target, scope),
+            _ => self.walk(target, scope, stmt),
         }
     }
 
@@ -350,6 +410,7 @@ impl<'a> Builder<'a> {
     fn analyze(&mut self) -> HashMap<(usize, String), Binding> {
         self.resolve_bindings();
         let tainted = self.tainted_scopes();
+        let read_tainted = self.read_tainted_scopes();
         let mut binds: HashMap<(usize, String), Binding> = HashMap::new();
         for occ in &self.occurrences {
             let Some(bscope) = self.resolve(&occ.name, occ.scope) else {
@@ -358,11 +419,17 @@ impl<'a> Builder<'a> {
             let b = binds.entry((bscope, occ.name.clone())).or_default();
             match occ.kind {
                 OccKind::Read => b.reads.push(occ.node),
-                OccKind::Definer => b.definers.push(occ.node),
+                OccKind::Definer => {
+                    b.definers.push(occ.node);
+                    b.definer_stmts.push(occ.stmt);
+                }
                 OccKind::Disqualify => b.disqualified = true,
             }
             if tainted.contains(&bscope) {
                 b.tainted = true;
+            }
+            if read_tainted.contains(&bscope) {
+                b.read_tainted = true;
             }
         }
         self.apply_directives(&mut binds);
@@ -448,6 +515,48 @@ impl<'a> Builder<'a> {
         out
     }
 
+    /// Scopes a dynamic read could reach (the reading scope and every scope enclosing it). A
+    /// binding here keeps its declaration even when every static read folds.
+    fn read_tainted_scopes(&self) -> HashSet<usize> {
+        let mut out = HashSet::new();
+        for s in 0..self.scopes.len() {
+            if !self.scopes[s].dynamic_read {
+                continue;
+            }
+            let mut a = Some(s);
+            while let Some(t) = a {
+                out.insert(t);
+                a = self.scopes[t].parent;
+            }
+        }
+        out
+    }
+
+    /// Whether `stmt` is a plain `name := <expr>` / `local|static name := <expr>` declaration whose
+    /// RHS is exactly `expr`, so deleting the whole statement removes only this binding. Rejects
+    /// `export`-wrapped statements (public API, may be read outside the bundle) and any nested or
+    /// compound assignment.
+    fn is_removable_stmt(&self, stmt: NodeId, expr: NodeId) -> bool {
+        // The statement may be a bare assignment/declaration or wrapped in an `ExpressionStatement`;
+        // an `ExportDecl` (or block, etc.) unwraps to itself and is rejected below.
+        let inner = match &self.program.arena[stmt].kind {
+            NodeKind::ExpressionStatement { expr } => *expr,
+            _ => stmt,
+        };
+        match &self.program.arena[inner].kind {
+            NodeKind::BinaryExpr { left, op, right } => {
+                *right == expr
+                    && assign_kind(self.program.span_text(*op).trim()) == Some(true)
+                    && matches!(
+                        self.program.arena[*left].kind,
+                        NodeKind::Identifier | NodeKind::VarDecl(_)
+                    )
+            }
+            NodeKind::VarDecl(v) => v.initializer == Some(expr),
+            _ => false,
+        }
+    }
+
     /// Mark bindings named by a `;@ahkbuild-const` directive as trusted constants.
     fn apply_directives(&self, binds: &mut HashMap<(usize, String), Binding>) {
         let stmts = self
@@ -493,27 +602,47 @@ impl<'a> Builder<'a> {
         Some((self.resolve(&name, scope)?, name))
     }
 
-    /// Turn qualifying bindings into [`Candidate`]s.
+    /// Turn qualifying bindings into [`Candidate`]s. Each candidate also carries the declaration
+    /// statement(s) safe to delete once it folds (empty when removal isn't provable).
     fn var_candidates(&self, binds: &HashMap<(usize, String), Binding>) -> Vec<Candidate> {
         let mut out = Vec::new();
         for b in binds.values() {
             if b.reads.is_empty() || b.definers.is_empty() {
                 continue;
             }
-            // A trusted directive folds on the first definer, skipping every safety check.
+            // A trusted directive folds on the first definer, skipping every safety check. Removal
+            // follows the same trust: every `:=` write is deletable (the structural export guard in
+            // `is_removable_stmt` still applies); any compound write is left as a dead store.
             if b.directive {
+                let removable = b
+                    .definer_stmts
+                    .iter()
+                    .zip(&b.definers)
+                    .filter(|(&stmt, &expr)| self.is_removable_stmt(stmt, expr))
+                    .map(|(&stmt, _)| stmt)
+                    .collect();
                 out.push(Candidate {
                     expr: b.definers[0],
                     reads: b.reads.clone(),
+                    removable,
                 });
                 continue;
             }
             if b.tainted || b.disqualified || b.definers.len() != 1 {
                 continue;
             }
+            // Removable only when no dynamic read could reach it and the declaration is a lone,
+            // deletable statement (not exported, not a nested/compound assignment).
+            let removable =
+                if !b.read_tainted && self.is_removable_stmt(b.definer_stmts[0], b.definers[0]) {
+                    vec![b.definer_stmts[0]]
+                } else {
+                    Vec::new()
+                };
             out.push(Candidate {
                 expr: b.definers[0],
                 reads: b.reads.clone(),
+                removable,
             });
         }
         out
@@ -698,7 +827,13 @@ impl<'a> Members<'a> {
         }
         by_body
             .into_iter()
-            .map(|(expr, reads)| Candidate { expr, reads })
+            // Getter-only properties shake out via shake's member pruning (folded accesses stop
+            // counting as references), not via statement deletion - so no `removable` here.
+            .map(|(expr, reads)| Candidate {
+                expr,
+                reads,
+                removable: Vec::new(),
+            })
             .collect()
     }
 }
@@ -752,6 +887,20 @@ mod tests {
             })
             .and_then(|(id, _)| r.literals.get(&id).cloned());
         value
+    }
+
+    /// The trimmed text of every declaration statement `fold` marked dead (a fully-folded
+    /// user constant safe to delete).
+    fn dead_const_texts(src: &str) -> Vec<String> {
+        let p = program(src);
+        let r = fold(&p, &Constants::default());
+        let mut texts: Vec<String> = r
+            .dead_consts
+            .iter()
+            .map(|&id| p.text(id).trim().to_string())
+            .collect();
+        texts.sort();
+        texts
     }
 
     #[test]
@@ -895,5 +1044,66 @@ mod tests {
             .find(|(_, n)| matches!(n.kind, NodeKind::IfStmt { .. }))
             .and_then(|(id, _)| r.branches.get(&id).copied());
         assert_eq!(branch, Some(crate::Branch::Dead));
+    }
+
+    #[test]
+    fn fully_folded_local_decl_is_removable() {
+        assert_eq!(
+            dead_const_texts("f() {\n  x := 42\n  return x\n}\n"),
+            vec!["x := 42"]
+        );
+    }
+
+    #[test]
+    fn fully_folded_static_decl_is_removable() {
+        assert_eq!(
+            dead_const_texts("f() {\n  static FLAG := 0x1234\n  return FLAG\n}\n"),
+            vec!["static FLAG := 0x1234"]
+        );
+    }
+
+    #[test]
+    fn dynamic_read_blocks_removal_but_not_folding() {
+        // `%name%` could read FLAG at runtime, so the declaration must stay even though the static
+        // `return FLAG` still folds.
+        let src = "f(name) {\n  FLAG := 1\n  y := %name%\n  return FLAG\n}\n";
+        assert!(ident_folds(src, "FLAG"));
+        assert!(dead_const_texts(src).is_empty());
+    }
+
+    #[test]
+    fn reassigned_local_is_not_removable() {
+        // Two definers: never folded, never removed.
+        assert!(dead_const_texts("f() {\n  x := 1\n  x := 2\n  return x\n}\n").is_empty());
+    }
+
+    #[test]
+    fn exported_const_folds_but_is_not_removable() {
+        // The read folds, but an exported constant is public API the bundler can't see all uses of.
+        let src = "export FOO := 5\nMsgBox(FOO)\n";
+        assert!(ident_folds(src, "FOO"));
+        assert!(dead_const_texts(src).is_empty());
+    }
+
+    #[test]
+    fn directive_const_removable_despite_reassignment() {
+        // The author trusts the directive; every `:=` write is deletable.
+        let src = ";@ahkbuild-const\nMAX := 64\nMAX := 128\nMsgBox(MAX)\n";
+        assert_eq!(dead_const_texts(src), vec!["MAX := 128", "MAX := 64"]);
+    }
+
+    #[test]
+    fn exported_directive_const_is_not_removable() {
+        // The structural export guard still applies even under a trust directive.
+        let src = ";@ahkbuild-const\nexport MAX := 64\nMsgBox(MAX)\n";
+        assert!(dead_const_texts(src).is_empty());
+    }
+
+    #[test]
+    fn nested_assignment_is_not_removed_wholesale() {
+        // `x` folds, but its definer sits inside `y := (x := 5)`; deleting that statement would
+        // also drop the assignment to `y`, so it must not be removable.
+        let src = "f() {\n  y := (x := 5)\n  return x + y\n}\n";
+        assert!(dead_const_texts(src).is_empty());
     }
 }

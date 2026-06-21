@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 
-use ahkbuild_fold::{Branch, FoldResult};
+use ahkbuild_fold::FoldResult;
 use ahkbuild_ir::node::{CallExpr, LiteralKind};
 use ahkbuild_ir::{children, NodeId, NodeKind, Program};
 
@@ -133,17 +133,13 @@ impl MemberNameTable {
     }
 }
 
-/// Scan the whole program and build the member-name table.
-///
-/// `fold` lets the scan honor [constant folding](ahkbuild_fold): a member referenced *only*
-/// inside a branch that folded to a build-time constant (e.g. `this._LoadLib32Bit()` in
-/// `A_PtrSize = 4 ? this._LoadLib32Bit() : …` on a 64-bit target) is never reachable, so it must
-/// not keep that member alive. We skip the condition and the dead arm, mirroring
-/// [`reach`](crate::reach)'s walk, so member pruning agrees with the branch the emitter keeps.
+/// Scan the whole program and build the member-name table. A member access that `fold` resolved
+/// to a literal (e.g. a getter-const `ClassName.Value`) is not counted as a reference, so an
+/// otherwise-unreferenced getter-only property can shake out.
 pub fn collect(program: &Program, fold: Option<&FoldResult>) -> MemberNameTable {
     let mut table = MemberNameTable::default();
     for module in program.modules() {
-        collect_node(program, &mut table, fold, module, module);
+        collect_node(program, &mut table, module, module, fold);
     }
     table
 }
@@ -185,9 +181,9 @@ pub(crate) fn surviving_arm(
 fn collect_node(
     program: &Program,
     table: &mut MemberNameTable,
-    fold: Option<&FoldResult>,
     node: NodeId,
     stmt: NodeId,
+    fold: Option<&FoldResult>,
 ) {
     if table.is_blown() {
         return;
@@ -196,11 +192,14 @@ fn collect_node(
         NodeKind::MemberAccess {
             member, is_dynamic, ..
         } => {
-            if *is_dynamic {
-                extract_dynamic_member(program, table, *member, stmt);
-            } else {
-                let name = program.text(*member).to_string();
-                table.add_exact(&name, node);
+            // A member access a user constant folded away is no longer a real reference.
+            if !fold.is_some_and(|f| f.folded_reads.contains(&node)) {
+                if *is_dynamic {
+                    extract_dynamic_member(program, table, *member, stmt);
+                } else {
+                    let name = program.text(*member).to_string();
+                    table.add_exact(&name, node);
+                }
             }
         }
         NodeKind::CallExpr(c) => check_reflection_call(program, table, c, node, stmt),
@@ -227,7 +226,7 @@ fn collect_node(
     );
     for child in children(&program.arena[node].kind) {
         let next = if descends_to_stmt { child } else { stmt };
-        collect_node(program, table, fold, child, next);
+        collect_node(program, table, child, next, fold);
     }
 }
 

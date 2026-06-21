@@ -15,7 +15,7 @@
 //! call), which is exactly what makes discarding a folded condition's subtree sound - every
 //! non-constant part was guaranteed never to execute.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use ahkbuild_ir::node::LiteralKind;
 use ahkbuild_ir::{children, NodeId, NodeKind, Program};
@@ -67,12 +67,21 @@ pub struct FoldResult {
     pub literals: HashMap<NodeId, ConstValue>,
     /// `IfStmt` / `TernaryExpr` nodes whose condition is build-time constant.
     pub branches: HashMap<NodeId, Branch>,
+    /// Read-site nodes (identifiers and static member accesses) that a detected user constant
+    /// folded away. Tree-shaking uses these to discount folded getter-const member accesses so the
+    /// property can be pruned. Distinct from [`Self::literals`], which keys *maximal* folded
+    /// expressions (`Consts.Value + 1`, not the inner `Consts.Value`).
+    pub folded_reads: HashSet<NodeId>,
+    /// Declaration statements of user constants whose every read folded away and that are safe to
+    /// delete: a non-exported constant that is either provably single-assignment with no dynamic
+    /// read, or author-trusted via `;@ahkbuild-const`. Shake folds these into its dead set.
+    pub dead_consts: HashSet<NodeId>,
 }
 
 impl FoldResult {
     /// Whether nothing was folded.
     pub fn is_empty(&self) -> bool {
-        self.literals.is_empty() && self.branches.is_empty()
+        self.literals.is_empty() && self.branches.is_empty() && self.dead_consts.is_empty()
     }
 }
 
@@ -82,13 +91,17 @@ pub fn fold(program: &Program, consts: &Constants) -> FoldResult {
     // properties, and `;@ahkbuild-const`-marked bindings), resolving each read site to a value.
     // The evaluator then treats those reads like any other constant, so substitution and branch
     // resolution fall out of the existing passes below.
-    let user_consts = userconst::collect(program, consts);
+    let user = userconst::collect(program, consts);
     let ev = Evaluator {
         program,
         consts,
-        user_consts: &user_consts,
+        user_consts: &user.reads,
     };
-    let mut result = FoldResult::default();
+    let mut result = FoldResult {
+        folded_reads: user.reads.keys().copied().collect(),
+        dead_consts: user.dead_consts,
+        ..Default::default()
+    };
 
     // (A) Maximal constant substitution: walk each module top-down, recording the largest
     // expressions that fold thanks to a build-time built-in (so `A_PtrSize * 8` is `64`, not
