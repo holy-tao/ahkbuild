@@ -1,19 +1,20 @@
 //! `ahkbuild` CLI. Parses an AHK file and, with `--ir`, lowers it to the IR and prints
-//! the IR tree — used to eyeball lowering against real v2.1 module sources.
+//! the IR tree - used to eyeball lowering against real v2.1 module sources.
 
 use std::fs;
 use std::path::PathBuf;
 
 use anyhow::Context;
-
 use anyhow::Result;
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 
 use ahkbuild_interpret::{AhkVersion, Bitness};
 
 mod bundle;
+mod bundle_exe;
 
 use bundle::bundle_ahk;
+use bundle_exe::bundle_exe;
 
 #[derive(Parser)]
 #[command(
@@ -26,12 +27,6 @@ struct Cli {
 
     #[command(subcommand)]
     command: Commands,
-}
-
-#[derive(ValueEnum, Debug, Clone, Eq, PartialEq)]
-enum BundleTarget {
-    Ahk,
-    Exe,
 }
 
 #[derive(Subcommand, Debug, Clone, Eq, PartialEq)]
@@ -59,22 +54,11 @@ enum InterpreterCommand {
     },
 }
 
-#[derive(Subcommand)]
-enum Commands {
-    /// Run the preprocessor over a file and emit the output
-    Preprocess {
-        /// The file to preprocess.
-        input: PathBuf,
-
-        /// The output file - leave blank to print to stdout.
-        output: Option<PathBuf>,
-    },
-    /// Bundle a script into a single script or a .exe file
-    Bundle {
-        /// The output format to bundle to
-        format: BundleTarget,
-
-        /// The file to bundle.
+#[derive(Subcommand, Debug, Clone)]
+enum BundleCommand {
+    /// Bundle to a single self-contained .ahk file
+    Ahk {
+        /// The entry script to bundle.
         input: PathBuf,
 
         /// The output file - leave blank to print to stdout.
@@ -89,7 +73,7 @@ enum Commands {
         keep_comments: bool,
 
         /// Override `A_IsCompiled` to fold build-time branches (e.g. `--compiled false`). Off by
-        /// default for `ahk` (a bundle may later be compiled with ahk2exe).
+        /// default (a bundle may later be compiled with ahk2exe).
         #[arg(long)]
         compiled: Option<bool>,
 
@@ -103,10 +87,57 @@ enum Commands {
         #[arg(long)]
         ir: bool,
 
-        /// Parse the main file and print the sexp
+        /// Parse the main file and print the sexp.
         #[cfg(debug_assertions)]
         #[arg(long)]
         sexp: bool,
+    },
+    /// Bundle to a standalone Windows .exe
+    Exe {
+        /// Path to ahkbuild.json. If omitted, the file is discovered by walking up from cwd.
+        #[arg(long)]
+        config: Option<PathBuf>,
+
+        /// Entry script. Overrides the `entry` field in ahkbuild.json.
+        #[arg(long)]
+        input: Option<PathBuf>,
+
+        /// Output file. Defaults to `<exe.name>.exe` from config, or `<entry-stem>.exe`.
+        #[arg(long, short)]
+        output: Option<PathBuf>,
+
+        /// Interpreter version. Overrides `interpreter.version` in ahkbuild.json.
+        #[arg(long)]
+        interpreter_version: Option<AhkVersion>,
+
+        /// Target bitness (32 or 64). Overrides `interpreter.bitness` in ahkbuild.json.
+        #[arg(long)]
+        bitness: Option<u8>,
+
+        /// Disable tree-shaking.
+        #[arg(long)]
+        no_tree_shake: bool,
+
+        /// Keep comments in the embedded scripts.
+        #[arg(long)]
+        keep_comments: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Run the preprocessor over a file and emit the output
+    Preprocess {
+        /// The file to preprocess.
+        input: PathBuf,
+
+        /// The output file - leave blank to print to stdout.
+        output: Option<PathBuf>,
+    },
+    /// Bundle a script into a .ahk file or standalone .exe
+    Bundle {
+        #[command(subcommand)]
+        cmd: BundleCommand,
     },
     /// Manage ahkbuild managed interpreters
     Interpreter {
@@ -133,66 +164,76 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        Commands::Bundle {
-            format,
-            input,
-            output,
-            no_tree_shake,
-            keep_comments,
-            compiled,
-            bitness,
-            #[cfg(debug_assertions)]
-            ir,
-            #[cfg(debug_assertions)]
-            sexp,
-        } => {
-            // If we've got one of the diagnostic flags, do that and exit
-            #[cfg(debug_assertions)]
-            if *ir || *sexp {
-                let raw = std::fs::read_to_string(input)
-                    .with_context(|| format!("reading {}", input.display()))?;
-                let source = ahkbuild_preprocess::run(&input.to_string_lossy(), &raw)?;
-
-                let tree = ahkbuild_syntax::parse(&source).context("parser returned no tree")?;
-                let root = tree.root_node();
-
-                if *ir {
-                    let program = ahkbuild_ir::lower(&tree, &source);
-                    print!("{}", ahkbuild_ir::print_program(&program));
+        Commands::Bundle { cmd } => match cmd {
+            BundleCommand::Ahk {
+                input,
+                output,
+                no_tree_shake,
+                keep_comments,
+                compiled,
+                bitness,
+                #[cfg(debug_assertions)]
+                ir,
+                #[cfg(debug_assertions)]
+                sexp,
+            } => {
+                #[cfg(debug_assertions)]
+                if *ir || *sexp {
+                    let raw = std::fs::read_to_string(input)
+                        .with_context(|| format!("reading {}", input.display()))?;
+                    let source = ahkbuild_preprocess::run(&input.to_string_lossy(), &raw)?;
+                    let tree =
+                        ahkbuild_syntax::parse(&source).context("parser returned no tree")?;
+                    let root = tree.root_node();
+                    if *ir {
+                        let program = ahkbuild_ir::lower(&tree, &source);
+                        print!("{}", ahkbuild_ir::print_program(&program));
+                    }
+                    if *sexp {
+                        print!("{}", &root.to_sexp());
+                    }
+                    return Ok(());
                 }
 
-                if *sexp {
-                    print!("{}", &root.to_sexp());
-                }
-
-                return Ok(());
-            }
-
-            // Backend-neutral emit knobs, shared by both targets (comments stripped by default).
-            // `.exe` output isn't read by humans, so it gets the aggressive whitespace pass.
-            let emit_options = ahkbuild_emit::EmitOptions {
-                strip_comments: !keep_comments,
-                whitespace: match format {
-                    BundleTarget::Exe => ahkbuild_emit::WsLevel::Minify,
-                    BundleTarget::Ahk => ahkbuild_emit::WsLevel::Readable,
-                },
-            };
-
-            // Otherwise run the appropriate bundler
-            match format {
-                BundleTarget::Exe => {
-                    todo!("EXE bundling is not yet supported");
-                }
-                BundleTarget::Ahk => bundle_ahk(
+                let emit_options = ahkbuild_emit::EmitOptions {
+                    strip_comments: !keep_comments,
+                    whitespace: ahkbuild_emit::WsLevel::Readable,
+                };
+                bundle_ahk(
                     input,
                     output,
                     !no_tree_shake,
                     *compiled,
                     *bitness,
                     &emit_options,
-                ),
+                )
             }
-        }
+            BundleCommand::Exe {
+                config,
+                input,
+                output,
+                interpreter_version,
+                bitness,
+                no_tree_shake,
+                keep_comments,
+            } => {
+                let bitness_enum = match bitness {
+                    Some(32) => Some(Bitness::X32),
+                    Some(64) => Some(Bitness::X64),
+                    Some(other) => anyhow::bail!("invalid --bitness {other}; expected 32 or 64"),
+                    None => None,
+                };
+                bundle_exe(
+                    config.as_deref(),
+                    input.as_deref(),
+                    output.as_deref(),
+                    interpreter_version.clone(),
+                    bitness_enum,
+                    !no_tree_shake,
+                    *keep_comments,
+                )
+            }
+        },
         Commands::Interpreter { command } => match command {
             InterpreterCommand::Install { version, bitness } => {
                 let targets = match bitness {
