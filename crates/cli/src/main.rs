@@ -49,7 +49,7 @@ enum InterpreterCommand {
     List,
     /// Remove cached interpreters
     Prune {
-        /// The AHK version to remove
+        /// The AHK version to remove. If unspecified, all versions are removed
         #[arg(long)]
         version: Option<AhkVersion>,
 
@@ -206,10 +206,37 @@ fn main() -> Result<()> {
                 Ok(())
             }
             InterpreterCommand::List => {
-                todo!("Not implemented: list")
+                let entries = ahkbuild_interpret::list()?;
+                if entries.is_empty() {
+                    println!("No cached interpreters.");
+                } else {
+                    for e in entries {
+                        let bits: Vec<&str> = e
+                            .bitnesses
+                            .iter()
+                            .map(|b| match b {
+                                Bitness::X32 => "x32",
+                                Bitness::X64 => "x64",
+                            })
+                            .collect();
+                        println!(
+                            "{:<20} {}  ({})",
+                            e.version,
+                            bits.join("  "),
+                            e.dir.display()
+                        );
+                    }
+                }
+                Ok(())
             }
             InterpreterCommand::Prune { version, bitness } => {
-                todo!("Not implemented: prune {:?} {:?}", version, bitness)
+                let n = ahkbuild_interpret::prune(version.as_ref(), bitness.as_ref())?;
+                match n {
+                    0 => println!("Nothing to remove."),
+                    1 => println!("Removed 1 entry."),
+                    _ => println!("Removed {} entries.", n),
+                }
+                Ok(())
             }
         },
     };
