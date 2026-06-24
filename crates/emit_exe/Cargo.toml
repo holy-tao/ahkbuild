@@ -27,4 +27,6 @@ windows-sys = { version = "0.59", features = [
 ] }
 
 [dev-dependencies]
+ahkbuild-syntax.workspace = true
+serde_json.workspace = true
 tempfile = "3"

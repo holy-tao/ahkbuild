@@ -106,13 +106,24 @@ pub enum Subsystem {
 
 #[derive(Debug, Deserialize, Default)]
 pub struct ResourcesConfig {
-    /// Additional icons appended after the interpreter's built-in icons.
-    /// Indices for LoadPicture start after the last built-in icon.
+    /// Additional icons embedded as new `RT_GROUP_ICON` groups under explicit resource ids.
+    /// A script loads one with `LoadPicture(A_ScriptFullPath, "Icon-" id)` (the negative form
+    /// addresses a group by resource id; the positive ordinal form is unstable - see
+    /// `docs/EXE_BUNDLING.md`).
     #[serde(default)]
-    pub icons: Vec<PathBuf>,
+    pub icons: Vec<IconResource>,
     /// Generic extra resources to embed (embedding deferred; schema defined now).
     #[serde(default)]
     pub extra: Vec<ExtraResource>,
+}
+
+/// One additional application icon: a `.ico` file and the `RT_GROUP_ICON` resource id it is filed
+/// under (the `N` in `LoadPicture(.., "Icon-N")`). The id must not collide with one of the
+/// interpreter's built-in icon groups; that is validated at bundle time.
+#[derive(Debug, Deserialize)]
+pub struct IconResource {
+    pub path: PathBuf,
+    pub id: u16,
 }
 
 #[derive(Debug, Deserialize)]
@@ -182,8 +193,8 @@ pub fn load(path: &Path) -> Result<BuildConfig> {
 fn resolve_paths(config: &mut BuildConfig, root: &Path) {
     resolve_opt(&mut config.entry, root);
     resolve_opt(&mut config.exe.icon, root);
-    for p in &mut config.resources.icons {
-        resolve(p, root);
+    for ic in &mut config.resources.icons {
+        resolve(&mut ic.path, root);
     }
     for r in &mut config.resources.extra {
         resolve(&mut r.path, root);
@@ -266,6 +277,25 @@ mod tests {
             &c.resources.extra[1].resource_type,
             ResourceType::Raw(23)
         ));
+    }
+
+    #[test]
+    fn icons_carry_explicit_ids() {
+        let c = parse(
+            r#"{
+            "interpreter": {"version": "2.1-alpha.27"},
+            "resources": {
+                "icons": [
+                    {"path": "assets/a.ico", "id": 300},
+                    {"path": "assets/b.ico", "id": 301}
+                ]
+            }
+        }"#,
+        );
+        assert_eq!(c.resources.icons.len(), 2);
+        assert_eq!(c.resources.icons[0].path, PathBuf::from("assets/a.ico"));
+        assert_eq!(c.resources.icons[0].id, 300);
+        assert_eq!(c.resources.icons[1].id, 301);
     }
 
     #[test]

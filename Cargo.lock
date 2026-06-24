@@ -69,8 +69,10 @@ dependencies = [
  "ahkbuild-ir",
  "ahkbuild-link",
  "ahkbuild-shake",
+ "ahkbuild-syntax",
  "anyhow",
  "editpe",
+ "serde_json",
  "tempfile",
  "windows-sys 0.59.0",
 ]
