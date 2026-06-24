@@ -80,17 +80,22 @@ impl Round {
     }
 }
 
-/// Bundle a linked program to a single self-contained `.ahk`, running the optimization passes
-/// to a fixpoint.
+/// A program after the optimization passes have run to a fixpoint: the (possibly re-linked) IR
+/// and plan, plus the converged side tables ([`Round`]). This is the shared hand-off to every
+/// emit backend - the `.ahk` emitter ([`bundle_ahk`]) and the `.exe` emitter both consume it, so
+/// optimization stays identical across targets.
+pub struct Converged {
+    pub program: Program,
+    pub plan: BundlePlan,
+    pub round: Round,
+}
+
+/// Run the optimization passes over a linked program to a fixpoint and return the converged
+/// program, plan, and side tables, without emitting. Both emit backends build on this.
 ///
-/// `consts` seeds constant folding; `optimize` runs fold + shake (set `false` for a
-/// byte-faithful bundle, as `--no-tree-shake` does); `emit` carries the final cosmetic knobs.
-pub fn bundle_ahk(
-    link_out: LinkOutput,
-    consts: Constants,
-    optimize: bool,
-    emit: &EmitOptions,
-) -> Result<String> {
+/// `consts` seeds constant folding; `optimize` runs fold + shake (set `false` for a byte-faithful
+/// bundle, as `--no-tree-shake` does).
+pub fn converge(link_out: LinkOutput, consts: Constants, optimize: bool) -> Result<Converged> {
     let mut facts = Facts::new(consts);
     let mut program = link_out.program;
     let mut plan = link_out.plan;
@@ -100,16 +105,14 @@ pub fn bundle_ahk(
         let round = run_inner_fixpoint(&program, &plan, &facts, optimize);
 
         // Structural pass (inlining): stubbed to no edits today, so we always take this branch
-        // on the first round and emit the final bundle.
+        // on the first round and return the converged state.
         let inline = plan_inline(&program, &plan, &round, &mut facts);
         if inline.is_empty() {
-            return Ok(emit_ahk(
-                &program,
-                &plan,
-                round.shake.as_ref(),
-                round.fold.as_ref(),
-                emit,
-            ));
+            return Ok(Converged {
+                program,
+                plan,
+                round,
+            });
         }
 
         if round_no == MAX_STRUCTURAL_ROUNDS {
@@ -133,6 +136,27 @@ pub fn bundle_ahk(
     }
 
     unreachable!("loop returns on convergence or errors at the round cap")
+}
+
+/// Bundle a linked program to a single self-contained `.ahk`, running the optimization passes
+/// to a fixpoint.
+///
+/// `consts` seeds constant folding; `optimize` runs fold + shake (set `false` for a
+/// byte-faithful bundle, as `--no-tree-shake` does); `emit` carries the final cosmetic knobs.
+pub fn bundle_ahk(
+    link_out: LinkOutput,
+    consts: Constants,
+    optimize: bool,
+    emit: &EmitOptions,
+) -> Result<String> {
+    let c = converge(link_out, consts, optimize)?;
+    Ok(emit_ahk(
+        &c.program,
+        &c.plan,
+        c.round.shake.as_ref(),
+        c.round.fold.as_ref(),
+        emit,
+    ))
 }
 
 /// Run the subtractive passes ([`fold`], then [`shake`]) over one IR until their side tables

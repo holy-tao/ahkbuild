@@ -8,6 +8,7 @@ members = [
     "crates/fold",
     "crates/shake",
     "crates/emit",
+    "crates/emit_exe",
     "crates/pipeline",
     "crates/cli",
     "crates/interpret",
@@ -30,6 +31,7 @@ clap = { version = "4", features = ["derive"] }
 semver = "1.0.28"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+editpe = "0.2"
 
 # Internal
 ahkbuild-syntax = { path = "crates/syntax" }
@@ -39,6 +41,7 @@ ahkbuild-link = { path = "crates/link" }
 ahkbuild-fold = { path = "crates/fold" }
 ahkbuild-shake = { path = "crates/shake" }
 ahkbuild-emit = { path = "crates/emit" }
+ahkbuild-emit-exe = { path = "crates/emit_exe" }
 ahkbuild-pipeline = { path = "crates/pipeline" }
 ahkbuild-interpret = { path = "crates/interpret" }
 ahkbuild-config = { path = "crates/config" }

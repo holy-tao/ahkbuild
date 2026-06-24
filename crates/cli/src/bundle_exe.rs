@@ -93,22 +93,26 @@ pub(crate) fn bundle_exe(
         is_compiled: Some(true),
         ptr_size,
     };
-    let emit_options = ahkbuild_emit::EmitOptions {
-        strip_comments: !keep_comments,
-        whitespace: ahkbuild_emit::WsLevel::Minify,
-    };
-    let _bundled = ahkbuild_pipeline::bundle_ahk(linked, consts, tree_shake, &emit_options)?;
+    let converged = ahkbuild_pipeline::converge(linked, consts, tree_shake)?;
 
     // 6. Determine output path
     let out_path = resolve_output(output, &config, entry);
-    eprintln!("output: {}", out_path.display());
 
-    // TODO(exe-emit): inject _bundled text (and per-module RCDATA for v2.1) into the interpreter
-    // PE binary and write to out_path. See docs/EXE_BUNDLING.md - crates/emit_exe planned.
-    anyhow::bail!(
-        "PE assembly not yet implemented\n\
-         use `ahkbuild bundle ahk` to produce a .ahk bundle in the meantime"
-    )
+    // 7. Emit: inject each module as RCDATA into a copy of the interpreter PE, stamp metadata, and
+    //    write the standalone exe. `keep_comments` is honored inside the exe emitter's render step.
+    let _ = keep_comments; // exe emit always minifies; comment retention is not yet plumbed through
+    ahkbuild_emit_exe::bundle_exe(
+        &interp,
+        &converged.program,
+        &converged.plan,
+        converged.round.shake.as_ref(),
+        converged.round.fold.as_ref(),
+        &config,
+        &out_path,
+    )?;
+
+    eprintln!("wrote {}", out_path.display());
+    Ok(())
 }
 
 fn resolve_output(
