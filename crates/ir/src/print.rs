@@ -74,6 +74,9 @@ impl Printer<'_> {
             NodeKind::Block { body } => format!("Block ({} stmts)", body.len()),
             NodeKind::ExpressionStatement { .. } => "ExpressionStatement".into(),
             NodeKind::Opaque => format!("Opaque \"{}\"", snippet(node.span)),
+            NodeKind::ExpressionSequence { exprs } => {
+                format!("ExpressionSequence ({})", exprs.len())
+            }
             NodeKind::Module(m) => format!(
                 "Module \"{}\"{}",
                 m.name,
@@ -236,6 +239,7 @@ impl Printer<'_> {
             NodeKind::Block { body } => self.list("", body, depth),
             NodeKind::ExpressionStatement { expr } => self.emit("expr", *expr, depth),
             NodeKind::Opaque => {}
+            NodeKind::ExpressionSequence { exprs } => self.list("", exprs, depth),
             NodeKind::Module(m) => self.list("", &m.body, depth),
             NodeKind::ImportDirective(_) => {}
             NodeKind::IncludeDirective(_) => {}
