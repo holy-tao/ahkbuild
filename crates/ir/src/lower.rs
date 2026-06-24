@@ -1420,14 +1420,16 @@ impl<'a> Lowerer<'a> {
     }
 
     fn build_try(&mut self, node: Node) -> NodeId {
-        let mut try_body = None;
+        let try_body = match node.child_by_field_name("body") {
+            Some(body_node) => self.build_node(body_node),
+            None => self.alloc(node, NodeKind::Opaque),
+        };
         let mut catches = Vec::new();
         let mut else_body = None;
         let mut finally_body = None;
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             match child.kind() {
-                "block" if try_body.is_none() => try_body = Some(self.build_block(child)),
                 "catch_clause" => catches.push(self.build_catch(child)),
                 "else_statement" => {
                     else_body = child
@@ -1444,7 +1446,7 @@ impl<'a> Lowerer<'a> {
                 }
             }
         }
-        let try_body = try_body.unwrap_or_else(|| self.alloc(node, NodeKind::Opaque));
+
         self.alloc(
             node,
             NodeKind::TryStmt(TryStmt {
