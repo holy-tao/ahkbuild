@@ -262,7 +262,9 @@ fn set_text(xml: &mut String, tag: &OpenTag, local: &str, value: &str) {
 }
 
 fn escape_text(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn escape_attr(s: &str) -> String {

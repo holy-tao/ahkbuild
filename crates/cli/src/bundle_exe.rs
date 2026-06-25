@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 
 use ahkbuild_interpret::{AhkVersion, Bitness};
 
-use crate::scripts::{ScriptContext, Stage, run_scripts};
+use crate::scripts::{run_scripts, ScriptContext, Stage};
 
 pub(crate) fn bundle_exe(
     config_path: Option<&Path>,

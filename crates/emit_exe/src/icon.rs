@@ -222,10 +222,16 @@ mod tests {
         let a = build_icon_resources(&fake_ico(2), 300, &[], &mut alloc).unwrap();
         let b = build_icon_resources(&fake_ico(2), 301, &[], &mut alloc).unwrap();
         assert_eq!(a.group_id, 300);
-        assert_eq!(a.images.iter().map(|(id, _)| *id).collect::<Vec<_>>(), [28, 29]);
+        assert_eq!(
+            a.images.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            [28, 29]
+        );
         assert!(a.stale_image_ids.is_empty());
         assert_eq!(b.group_id, 301);
-        assert_eq!(b.images.iter().map(|(id, _)| *id).collect::<Vec<_>>(), [30, 31]);
+        assert_eq!(
+            b.images.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            [30, 31]
+        );
     }
 
     #[test]

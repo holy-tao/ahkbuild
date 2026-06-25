@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 
 /// Stdin handed to a build script: inherit a usable handle, else `NUL`.
 ///
@@ -131,10 +131,7 @@ pub(crate) fn run_scripts(
     // table additionally exposes the `AHK` builtin, which resolves to the configured interpreter.
     let env = ctx.vars(stage);
     let mut subst = env.clone();
-    subst.insert(
-        "AHK".into(),
-        ctx.interpreter.to_string_lossy().into_owned(),
-    );
+    subst.insert("AHK".into(), ctx.interpreter.to_string_lossy().into_owned());
     for script in scripts {
         run_one(stage, script, ctx, &env, &subst)?;
     }
@@ -171,7 +168,12 @@ fn run_one(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .with_context(|| format!("failed to launch {}-bundle script {program:?}", stage.as_str()))?;
+        .with_context(|| {
+            format!(
+                "failed to launch {}-bundle script {program:?}",
+                stage.as_str()
+            )
+        })?;
 
     let mut child_out = child.stdout.take().expect("stdout piped");
     let mut child_err = child.stderr.take().expect("stderr piped");
