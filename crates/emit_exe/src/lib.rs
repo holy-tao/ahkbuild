@@ -113,7 +113,53 @@ pub fn bundle_exe(
         &files,
         &icons,
         &extras,
-    )
+    )?;
+
+    // 7. Patch the PE optional-header Subsystem field (GUI vs console). Done last, as a direct byte
+    //    edit on the finished file - `UpdateResource` never touches this field.
+    patch_subsystem(output, config.exe.subsystem)
+        .with_context(|| format!("patching subsystem of {}", output.display()))
+}
+
+/// Patch the PE optional-header `Subsystem` field so the exe launches as a GUI app
+/// (`IMAGE_SUBSYSTEM_WINDOWS_GUI`) or a console app (`IMAGE_SUBSYSTEM_WINDOWS_CUI`, which makes the
+/// AHK runtime allocate a console for stdin/stdout). The field sits at a fixed offset in the
+/// optional header (the standard+windows fields up to it are identically sized in PE32 and PE32+),
+/// so this is a 2-byte in-place edit and stays portable (no Win32 call). A no-op if already set.
+fn patch_subsystem(output: &Path, subsystem: Subsystem) -> Result<()> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+
+    // IMAGE_SUBSYSTEM_WINDOWS_GUI / _CUI.
+    let desired: u16 = match subsystem {
+        Subsystem::Gui => 2,
+        Subsystem::Console => 3,
+    };
+
+    let mut f = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(output)?;
+
+    // DOS header: e_lfanew at 0x3C points to the PE signature.
+    let mut buf4 = [0u8; 4];
+    f.seek(SeekFrom::Start(0x3C))?;
+    f.read_exact(&mut buf4)?;
+    let e_lfanew = u32::from_le_bytes(buf4) as u64;
+
+    f.seek(SeekFrom::Start(e_lfanew))?;
+    f.read_exact(&mut buf4)?;
+    anyhow::ensure!(&buf4 == b"PE\0\0", "{} is not a PE file", output.display());
+
+    // Subsystem = signature(4) + COFF header(20) + offset 68 into the optional header.
+    let subsystem_off = e_lfanew + 4 + 20 + 68;
+    f.seek(SeekFrom::Start(subsystem_off))?;
+    let mut cur = [0u8; 2];
+    f.read_exact(&mut cur)?;
+    if u16::from_le_bytes(cur) != desired {
+        f.seek(SeekFrom::Start(subsystem_off))?;
+        f.write_all(&desired.to_le_bytes())?;
+    }
+    Ok(())
 }
 
 /// Assemble every icon resource to inject: `exe.icon` (replacing the interpreter's primary group)
