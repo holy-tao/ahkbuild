@@ -38,9 +38,6 @@ pub(crate) fn resolve_continuations(name: &str, src: &str) -> Result<String> {
                     have_cur = true;
                     i += 1;
                 }
-                OpenerKind::Error(msg) => {
-                    bail!("{name}:{}: {msg}", i + 1);
-                }
                 OpenerKind::Section(opts) => {
                     // Gather interior lines up to the closing `)`.
                     let mut interior: Vec<&str> = Vec::new();
@@ -164,7 +161,6 @@ enum OpenerKind {
     /// A line starting with `(` that is really an expression (`((`, `(MyFunc(`, `(x.y)`).
     NotSection,
     Section(Options),
-    Error(String),
 }
 
 /// If `line`'s first non-whitespace character is `(`, return the text after it (the
@@ -202,7 +198,7 @@ fn classify_opener(rest: &str) -> OpenerKind {
             "rtrim0" => opts.rtrim_keep = true,
             "comments" | "comment" | "com" | "c" => opts.comments = true,
             "`" => opts.accent = true,
-            _ => return OpenerKind::Error(format!("unknown continuation-section option {tok:?}")),
+            _ => return OpenerKind::NotSection,
         }
     }
 
@@ -473,12 +469,6 @@ mod tests {
     fn unterminated_section_is_an_error() {
         let err = resolve_continuations("f.ahk", "x := \"\n(\nnever closed\n").unwrap_err();
         assert!(err.to_string().contains("unterminated"), "{err}");
-    }
-
-    #[test]
-    fn unknown_option_is_an_error() {
-        let err = resolve_continuations("f.ahk", "x := \"\n( Bogus\na\n)\"\n").unwrap_err();
-        assert!(err.to_string().contains("unknown"), "{err}");
     }
 
     #[test]
