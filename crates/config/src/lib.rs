@@ -90,6 +90,9 @@ pub struct ExeConfig {
     pub icon: Option<PathBuf>,
     #[serde(default)]
     pub subsystem: Subsystem,
+    /// Application-manifest (RT_MANIFEST) overrides applied on top of the interpreter's manifest.
+    #[serde(default)]
+    pub manifest: ManifestConfig,
 }
 
 #[derive(Debug, Deserialize, Clone, Copy, Default, PartialEq, Eq)]
@@ -98,6 +101,62 @@ pub enum Subsystem {
     #[default]
     Gui,
     Console,
+}
+
+/// Overrides applied to the interpreter's embedded application manifest. Each field is `None` by
+/// default, meaning "leave the interpreter's manifest value untouched"; only the fields the user
+/// sets are surgically edited into the existing manifest (see `docs/EXE_BUNDLING.md`).
+#[derive(Debug, Deserialize, Default)]
+pub struct ManifestConfig {
+    /// UAC requested execution level (`<requestedExecutionLevel level="...">`).
+    pub uac: Option<UacLevel>,
+    /// Legacy DPI-awareness flag (`<dpiAware>true|false</dpiAware>`).
+    #[serde(rename = "dpiAware")]
+    pub dpi_aware: Option<bool>,
+    /// Modern DPI-awareness mode string, e.g. `"PerMonitorV2"` or `"system"`
+    /// (`<dpiAwareness>...</dpiAwareness>`).
+    #[serde(rename = "dpiAwareness")]
+    pub dpi_awareness: Option<String>,
+    /// Opt into long (>MAX_PATH) path support (`<longPathAware>true|false</longPathAware>`).
+    #[serde(rename = "longPathAware")]
+    pub long_path_aware: Option<bool>,
+    /// Opt into GDI bitmap scaling under DPI virtualization (`<gdiScaling>true|false</gdiScaling>`).
+    #[serde(rename = "gdiScaling")]
+    pub gdi_scaling: Option<bool>,
+}
+
+impl ManifestConfig {
+    /// True if no manifest override is set, so the interpreter's manifest is left as shipped (and
+    /// the emitter skips the RT_MANIFEST update entirely).
+    pub fn is_empty(&self) -> bool {
+        self.uac.is_none()
+            && self.dpi_aware.is_none()
+            && self.dpi_awareness.is_none()
+            && self.long_path_aware.is_none()
+            && self.gdi_scaling.is_none()
+    }
+}
+
+/// UAC requested execution level. Variants serialize to the exact manifest attribute strings.
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+pub enum UacLevel {
+    #[serde(rename = "asInvoker")]
+    AsInvoker,
+    #[serde(rename = "highestAvailable")]
+    HighestAvailable,
+    #[serde(rename = "requireAdministrator")]
+    RequireAdministrator,
+}
+
+impl UacLevel {
+    /// The exact `level="..."` manifest value.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            UacLevel::AsInvoker => "asInvoker",
+            UacLevel::HighestAvailable => "highestAvailable",
+            UacLevel::RequireAdministrator => "requireAdministrator",
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -254,6 +313,33 @@ mod tests {
             r#"{"interpreter": {"version": "2.1-alpha.27"}, "exe": {"subsystem": "console"}}"#,
         );
         assert_eq!(c.exe.subsystem, Subsystem::Console);
+    }
+
+    #[test]
+    fn manifest_overrides_parse() {
+        let c = parse(
+            r#"{
+            "interpreter": {"version": "2.1-alpha.27"},
+            "exe": {"manifest": {
+                "uac": "requireAdministrator",
+                "dpiAwareness": "PerMonitorV2",
+                "longPathAware": true,
+                "gdiScaling": true
+            }}
+        }"#,
+        );
+        assert_eq!(c.exe.manifest.uac, Some(UacLevel::RequireAdministrator));
+        assert_eq!(c.exe.manifest.dpi_aware, None);
+        assert_eq!(c.exe.manifest.dpi_awareness.as_deref(), Some("PerMonitorV2"));
+        assert_eq!(c.exe.manifest.long_path_aware, Some(true));
+        assert_eq!(c.exe.manifest.gdi_scaling, Some(true));
+        assert!(!c.exe.manifest.is_empty());
+    }
+
+    #[test]
+    fn manifest_empty_by_default() {
+        let c = parse(r#"{"interpreter": {"version": "2.1-alpha.27"}}"#);
+        assert!(c.exe.manifest.is_empty());
     }
 
     #[test]

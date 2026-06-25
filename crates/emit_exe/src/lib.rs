@@ -18,13 +18,14 @@
 
 mod fileinstall;
 mod icon;
+mod manifest;
 mod resource;
 
 use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use ahkbuild_config::BuildConfig;
+use ahkbuild_config::{BuildConfig, Subsystem};
 use ahkbuild_emit::{emit_exe_modules, EmitModule, EmitOptions, ResourceName, WsLevel};
 use ahkbuild_fold::FoldResult;
 use ahkbuild_ir::Program;
@@ -63,6 +64,10 @@ pub fn bundle_exe(
     // 2. Build the version-info resource bytes from the interpreter's existing one (read-only use
     //    of editpe) overlaid with the project's metadata.
     let version = build_version_bytes(interpreter, config).context("building version info")?;
+
+    // 2b. Build the edited application manifest (if any `exe.manifest` override is set) from the
+    //     interpreter's manifest. `None` leaves the interpreter's manifest untouched.
+    let manifest = manifest::build_manifest_bytes(interpreter, config).context("building manifest")?;
 
     // 3. Detect live `FileInstall` calls and read each file's bytes for embedding.
     let installs = fileinstall::scan(program, shake, fold).context("scanning FileInstall calls")?;
@@ -110,6 +115,7 @@ pub fn bundle_exe(
         output,
         &modules,
         version.as_deref(),
+        manifest.as_deref(),
         &files,
         &icons,
         &extras,
@@ -386,6 +392,7 @@ fn write_resources(
     output: &Path,
     modules: &[EmitModule],
     version: Option<&[u8]>,
+    manifest: Option<&[u8]>,
     files: &[(String, Vec<u8>)],
     icons: &[IconResources],
     extras: &[EmbeddedResource],
@@ -402,6 +409,7 @@ fn write_resources(
     const RT_VERSION: *const u16 = std::ptr::without_provenance(16);
     const RT_ICON: *const u16 = std::ptr::without_provenance(3);
     const RT_GROUP_ICON: *const u16 = std::ptr::without_provenance(14);
+    const RT_MANIFEST: *const u16 = std::ptr::without_provenance(24);
     let int_name = |id: usize| -> *const u16 { std::ptr::without_provenance(id) };
 
     let wide_path: Vec<u16> = output.as_os_str().encode_wide().chain([0]).collect();
@@ -458,6 +466,12 @@ fn write_resources(
         update(RT_VERSION, int_name(1), Some(v)).context("embedding version info")?;
     }
 
+    // RT_MANIFEST id 1 (CREATEPROCESS_MANIFEST_RESOURCE_ID), under the same language as the
+    // interpreter's manifest (0x0409), so it replaces rather than duplicates it.
+    if let Some(mf) = manifest {
+        update(RT_MANIFEST, int_name(1), Some(mf)).context("embedding application manifest")?;
+    }
+
     for icon in icons {
         for (id, data) in &icon.images {
             update(RT_ICON, int_name(*id as usize), Some(data))
@@ -503,6 +517,7 @@ fn write_resources(
     _output: &Path,
     _modules: &[EmitModule],
     _version: Option<&[u8]>,
+    _manifest: Option<&[u8]>,
     _files: &[(String, Vec<u8>)],
     _icons: &[IconResources],
     _extras: &[EmbeddedResource],
