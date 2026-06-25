@@ -7,10 +7,6 @@ use serde::Deserialize;
 
 pub use ahkbuild_interpret::{AhkVersion, Bitness};
 
-// ---------------------------------------------------------------------------
-// Top-level config
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Deserialize)]
 pub struct BuildConfig {
     pub entry: Option<PathBuf>,
@@ -43,10 +39,6 @@ impl BuildConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Interpreter config
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Deserialize)]
 pub struct InterpreterConfig {
     #[serde(deserialize_with = "deser_ahk_version")]
@@ -75,10 +67,6 @@ fn deser_bitness<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Bitness, D::E
     }
 }
 
-// ---------------------------------------------------------------------------
-// Exe config
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Deserialize, Default)]
 pub struct ExeConfig {
     pub name: Option<String>,
@@ -86,6 +74,12 @@ pub struct ExeConfig {
     pub version: Option<String>,
     pub description: Option<String>,
     pub copyright: Option<String>,
+    /// `CompanyName` string-table entry. Left as the interpreter's value if omitted.
+    pub company: Option<String>,
+    /// `LegalTrademarks` string-table entry. Left as the interpreter's value if omitted.
+    pub trademarks: Option<String>,
+    /// `Comments` string-table entry. Left as the interpreter's value if omitted.
+    pub comments: Option<String>,
     /// Replaces the interpreter's primary icon (RT_GROUP_ICON group ID 1).
     pub icon: Option<PathBuf>,
     #[serde(default)]
@@ -159,10 +153,6 @@ impl UacLevel {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Resources config
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Deserialize, Default)]
 pub struct ResourcesConfig {
     /// Additional icons embedded as new `RT_GROUP_ICON` groups under explicit resource ids.
@@ -200,10 +190,6 @@ pub enum ResourceType {
     Raw(u16),
 }
 
-// ---------------------------------------------------------------------------
-// Scripts config
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, Deserialize, Default)]
 pub struct ScriptsConfig {
     #[serde(default, rename = "pre-bundle")]
@@ -211,10 +197,6 @@ pub struct ScriptsConfig {
     #[serde(default, rename = "post-bundle")]
     pub post_bundle: Vec<PathBuf>,
 }
-
-// ---------------------------------------------------------------------------
-// Discovery & loading
-// ---------------------------------------------------------------------------
 
 /// Walk upward from `start` (file or directory) looking for `ahkbuild.json`.
 pub fn find_config(start: &Path) -> Result<Option<PathBuf>> {
@@ -280,10 +262,6 @@ fn resolve_opt(opt: &mut Option<PathBuf>, root: &Path) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,7 +308,10 @@ mod tests {
         );
         assert_eq!(c.exe.manifest.uac, Some(UacLevel::RequireAdministrator));
         assert_eq!(c.exe.manifest.dpi_aware, None);
-        assert_eq!(c.exe.manifest.dpi_awareness.as_deref(), Some("PerMonitorV2"));
+        assert_eq!(
+            c.exe.manifest.dpi_awareness.as_deref(),
+            Some("PerMonitorV2")
+        );
         assert_eq!(c.exe.manifest.long_path_aware, Some(true));
         assert_eq!(c.exe.manifest.gdi_scaling, Some(true));
         assert!(!c.exe.manifest.is_empty());

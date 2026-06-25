@@ -369,6 +369,9 @@ fn build_version_bytes(interpreter: &Path, config: &BuildConfig) -> Result<Optio
     );
     set("FileDescription", exe.description.clone());
     set("LegalCopyright", exe.copyright.clone());
+    set("CompanyName", exe.company.clone());
+    set("LegalTrademarks", exe.trademarks.clone());
+    set("Comments", exe.comments.clone());
 
     Ok(Some(info.build()))
 }
