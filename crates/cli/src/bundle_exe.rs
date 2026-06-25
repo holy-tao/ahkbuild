@@ -6,6 +6,8 @@ use anyhow::{Context, Result};
 
 use ahkbuild_interpret::{AhkVersion, Bitness};
 
+use crate::scripts::{ScriptContext, Stage, run_scripts};
+
 pub(crate) fn bundle_exe(
     config_path: Option<&Path>,
     input_override: Option<&Path>,
@@ -95,10 +97,31 @@ pub(crate) fn bundle_exe(
     };
     let converged = ahkbuild_pipeline::converge(linked, consts, tree_shake)?;
 
-    // 6. Determine output path
+    // 6. Determine output path and the build-script context. The config directory is the project
+    //    root: relative paths in argv resolve against it, and scripts run with it as their cwd.
     let out_path = resolve_output(output, &config, entry);
+    let config_dir = config_file
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let defines = config.defines_env()?;
+    let ctx = ScriptContext {
+        target: "exe",
+        output: &out_path,
+        entry,
+        interpreter: &interp,
+        bitness: config.interpreter.bitness.clone(),
+        subsystem: config.exe.subsystem,
+        version: config.exe.version.as_deref(),
+        config_dir: &config_dir,
+        defines: &defines,
+    };
 
-    // 7. Emit: inject each module as RCDATA into a copy of the interpreter PE, stamp metadata, and
+    // 7. Pre-bundle scripts (e.g. codegen) run before emit; AHKBUILD_OUTPUT points at the
+    //    not-yet-written exe so a script can pre-stage siblings.
+    run_scripts(Stage::Pre, &config.scripts.pre_bundle, &ctx)?;
+
+    // 8. Emit: inject each module as RCDATA into a copy of the interpreter PE, stamp metadata, and
     //    write the standalone exe. `keep_comments` is honored inside the exe emitter's render step.
     let _ = keep_comments; // exe emit always minifies; comment retention is not yet plumbed through
     ahkbuild_emit_exe::bundle_exe(
@@ -112,6 +135,10 @@ pub(crate) fn bundle_exe(
     )?;
 
     eprintln!("wrote {}", out_path.display());
+
+    // 9. Post-bundle scripts (e.g. code signing, UPX/MPRESS compression) run on the finished exe.
+    run_scripts(Stage::Post, &config.scripts.post_bundle, &ctx)?;
+
     Ok(())
 }
 

@@ -1,8 +1,9 @@
 //! Project configuration parsed from `ahkbuild.json`.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 pub use ahkbuild_interpret::{AhkVersion, Bitness};
@@ -17,6 +18,10 @@ pub struct BuildConfig {
     pub resources: ResourcesConfig,
     #[serde(default)]
     pub scripts: ScriptsConfig,
+    /// User-defined build variables, exposed to build scripts as environment variables and
+    /// (forward-compat) reserved to feed the preprocessor/fold pass for conditional compilation.
+    #[serde(default)]
+    pub defines: BTreeMap<String, DefineValue>,
 }
 
 impl BuildConfig {
@@ -35,6 +40,58 @@ impl BuildConfig {
         }
         if let Some(b) = bitness {
             self.interpreter.bitness = b;
+        }
+    }
+
+    /// Validate and stringify `defines` into a name -> value map for build-script environments and
+    /// `${NAME}` argv substitution. Names must be valid identifiers (`[A-Za-z_][A-Za-z0-9_]*`) and
+    /// must not collide with the reserved `AHKBUILD_` prefix.
+    pub fn defines_env(&self) -> Result<BTreeMap<String, String>> {
+        let mut out = BTreeMap::new();
+        for (name, value) in &self.defines {
+            if !is_valid_define_name(name) {
+                bail!(
+                    "invalid define name {name:?}: must match [A-Za-z_][A-Za-z0-9_]* and not start \
+                     with the reserved 'AHKBUILD_' prefix"
+                );
+            }
+            out.insert(name.clone(), value.to_env_string());
+        }
+        Ok(out)
+    }
+}
+
+fn is_valid_define_name(name: &str) -> bool {
+    if name.starts_with("AHKBUILD_") {
+        return false;
+    }
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// A build-variable value. Accepts a JSON string, integer, float, or boolean; everything is
+/// rendered to a flat string when handed to build scripts.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum DefineValue {
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    Str(String),
+}
+
+impl DefineValue {
+    /// Render the value as the string a build script sees (e.g. `1`, `true`, `An arbitrary string`).
+    pub fn to_env_string(&self) -> String {
+        match self {
+            DefineValue::Bool(b) => b.to_string(),
+            DefineValue::Int(n) => n.to_string(),
+            DefineValue::Float(f) => f.to_string(),
+            DefineValue::Str(s) => s.clone(),
         }
     }
 }
@@ -193,9 +250,47 @@ pub enum ResourceType {
 #[derive(Debug, Deserialize, Default)]
 pub struct ScriptsConfig {
     #[serde(default, rename = "pre-bundle")]
-    pub pre_bundle: Vec<PathBuf>,
+    pub pre_bundle: Vec<BuildScript>,
     #[serde(default, rename = "post-bundle")]
-    pub post_bundle: Vec<PathBuf>,
+    pub post_bundle: Vec<BuildScript>,
+}
+
+/// A pre- or post-bundle command run out-of-process. Stored as an argv vector (no shell), so paths
+/// with spaces are safe and no quoting is required. The first token may be the builtin `${AHK}`,
+/// which resolves to the configured interpreter; any `${NAME}` token is substituted from the build
+/// environment (the `AHKBUILD_*` vars and user `defines`) before the command runs.
+///
+/// Accepts three JSON shapes, all normalized to `command`:
+/// - a bare string `"./sign.exe"` - a single executable, no arguments;
+/// - an array `["${AHK}", "./postbuild.ahk"]` - an explicit argv;
+/// - an object `{ "command": ["upx", "--best", "${AHKBUILD_OUTPUT}"] }` - for forward-compat with
+///   future per-script options.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BuildScript {
+    pub command: Vec<String>,
+}
+
+impl<'de> Deserialize<'de> for BuildScript {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Repr {
+            Shorthand(String),
+            Argv(Vec<String>),
+            Detailed { command: Vec<String> },
+        }
+        let command = match Repr::deserialize(d)? {
+            Repr::Shorthand(s) => vec![s],
+            Repr::Argv(v) => v,
+            Repr::Detailed { command } => command,
+        };
+        if command.is_empty() {
+            return Err(serde::de::Error::custom(
+                "build script command must have at least one token",
+            ));
+        }
+        Ok(BuildScript { command })
+    }
 }
 
 /// Walk upward from `start` (file or directory) looking for `ahkbuild.json`.
@@ -240,14 +335,8 @@ fn resolve_paths(config: &mut BuildConfig, root: &Path) {
     for r in &mut config.resources.extra {
         resolve(&mut r.path, root);
     }
-    for p in config
-        .scripts
-        .pre_bundle
-        .iter_mut()
-        .chain(config.scripts.post_bundle.iter_mut())
-    {
-        resolve(p, root);
-    }
+    // Build-script commands are argv strings, not paths: relative paths in them resolve naturally
+    // against the script working directory (the project root), so nothing is rewritten here.
 }
 
 fn resolve(p: &mut PathBuf, root: &Path) {
@@ -366,15 +455,70 @@ mod tests {
     }
 
     #[test]
-    fn scripts_round_trip() {
+    fn scripts_accept_all_three_forms() {
         let c = parse(
             r#"{
             "interpreter": {"version": "2.1-alpha.27"},
-            "scripts": {"pre-bundle": ["pre.ahk"], "post-bundle": ["post.ahk"]}
+            "scripts": {
+                "pre-bundle": ["./sign.exe", ["${AHK}", "pre.ahk"]],
+                "post-bundle": [{"command": ["upx", "--best", "${AHKBUILD_OUTPUT}"]}]
+            }
         }"#,
         );
-        assert_eq!(c.scripts.pre_bundle.len(), 1);
-        assert_eq!(c.scripts.post_bundle.len(), 1);
+        // bare string -> single-token argv
+        assert_eq!(c.scripts.pre_bundle[0].command, vec!["./sign.exe"]);
+        // array -> explicit argv with the ${AHK} builtin token
+        assert_eq!(c.scripts.pre_bundle[1].command, vec!["${AHK}", "pre.ahk"]);
+        // object -> command field
+        assert_eq!(
+            c.scripts.post_bundle[0].command,
+            vec!["upx", "--best", "${AHKBUILD_OUTPUT}"]
+        );
+    }
+
+    #[test]
+    fn empty_script_command_rejected() {
+        let err = serde_json::from_str::<BuildConfig>(
+            r#"{"interpreter": {"version": "2.1-alpha.27"}, "scripts": {"post-bundle": [[]]}}"#,
+        );
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn defines_stringify_by_type() {
+        let c = parse(
+            r#"{
+            "interpreter": {"version": "2.1-alpha.27"},
+            "defines": {"DEBUG": 1, "RATIO": 1.5, "FLAG": true, "MODE": "release"}
+        }"#,
+        );
+        let env = c.defines_env().expect("valid defines");
+        assert_eq!(env["DEBUG"], "1");
+        assert_eq!(env["RATIO"], "1.5");
+        assert_eq!(env["FLAG"], "true");
+        assert_eq!(env["MODE"], "release");
+    }
+
+    #[test]
+    fn reserved_define_name_rejected() {
+        let c = parse(
+            r#"{
+            "interpreter": {"version": "2.1-alpha.27"},
+            "defines": {"AHKBUILD_OUTPUT": "nope"}
+        }"#,
+        );
+        assert!(c.defines_env().is_err());
+    }
+
+    #[test]
+    fn invalid_define_name_rejected() {
+        let c = parse(
+            r#"{
+            "interpreter": {"version": "2.1-alpha.27"},
+            "defines": {"1BAD": "nope"}
+        }"#,
+        );
+        assert!(c.defines_env().is_err());
     }
 
     #[test]

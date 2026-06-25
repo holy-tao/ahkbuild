@@ -67,7 +67,8 @@ pub fn bundle_exe(
 
     // 2b. Build the edited application manifest (if any `exe.manifest` override is set) from the
     //     interpreter's manifest. `None` leaves the interpreter's manifest untouched.
-    let manifest = manifest::build_manifest_bytes(interpreter, config).context("building manifest")?;
+    let manifest =
+        manifest::build_manifest_bytes(interpreter, config).context("building manifest")?;
 
     // 3. Detect live `FileInstall` calls and read each file's bytes for embedding.
     let installs = fileinstall::scan(program, shake, fold).context("scanning FileInstall calls")?;
@@ -103,13 +104,7 @@ pub fn bundle_exe(
         resource::collect(config, &reserved_rcdata).context("collecting extra resources")?;
 
     // 6. Copy the interpreter to the output path, then inject resources into the copy.
-    std::fs::copy(interpreter, output).with_context(|| {
-        format!(
-            "copying interpreter {} -> {}",
-            interpreter.display(),
-            output.display()
-        )
-    })?;
+    copy_interpreter(interpreter, output)?;
 
     write_resources(
         output,
@@ -125,6 +120,53 @@ pub fn bundle_exe(
     //    edit on the finished file - `UpdateResource` never touches this field.
     patch_subsystem(output, config.exe.subsystem)
         .with_context(|| format!("patching subsystem of {}", output.display()))
+}
+
+/// Copy the interpreter to `output`, retrying briefly on a Windows sharing violation.
+///
+/// `fs::copy` fails with `ERROR_SHARING_VIOLATION` (os error 32) or `ERROR_LOCK_VIOLATION` (33) when
+/// another process holds the source or destination open. A short-lived holder like an antivirus scanning
+/// a new interpreter should release the lock pretty quickly.
+fn copy_interpreter(interpreter: &Path, output: &Path) -> Result<()> {
+    use std::time::Duration;
+
+    const ATTEMPTS: usize = 6;
+    let mut delay = Duration::from_millis(50);
+    let mut last_err = None;
+    for attempt in 1..=ATTEMPTS {
+        match std::fs::copy(interpreter, output) {
+            Ok(_) => return Ok(()),
+            Err(e) if is_sharing_violation(&e) => {
+                last_err = Some(e);
+                if attempt < ATTEMPTS {
+                    std::thread::sleep(delay);
+                    delay = (delay * 2).min(Duration::from_millis(250));
+                }
+            }
+            Err(e) => {
+                return Err(e).with_context(|| {
+                    format!(
+                        "copying interpreter {} -> {}",
+                        interpreter.display(),
+                        output.display()
+                    )
+                });
+            }
+        }
+    }
+    Err(last_err.expect("loop only exits here after a sharing violation")).with_context(|| {
+        format!(
+            "copying interpreter {} -> {}: the file is still in use by another process.",
+            interpreter.display(),
+            output.display()
+        )
+    })
+}
+
+/// A Windows file-sharing/lock violation (`ERROR_SHARING_VIOLATION` / `ERROR_LOCK_VIOLATION`), the
+/// transient error AV scanners and not-yet-released handles produce. Always `false` off Windows.
+fn is_sharing_violation(e: &std::io::Error) -> bool {
+    matches!(e.raw_os_error(), Some(32) | Some(33))
 }
 
 /// Patch the PE optional-header `Subsystem` field so the exe launches as a GUI app
@@ -206,9 +248,7 @@ fn build_icons(interpreter: &Path, config: &BuildConfig) -> Result<Vec<IconResou
         );
         out.push(
             icon::build_icon_resources(&ico_bytes, layout.group_id, &layout.member_ids, &mut alloc)
-                .with_context(|| {
-                    format!("building primary icon from {}", ico_path.display())
-                })?,
+                .with_context(|| format!("building primary icon from {}", ico_path.display()))?,
         );
     }
 

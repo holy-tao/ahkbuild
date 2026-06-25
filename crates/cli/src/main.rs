@@ -12,6 +12,7 @@ use ahkbuild_interpret::{AhkVersion, Bitness};
 
 mod bundle;
 mod bundle_exe;
+mod scripts;
 
 use bundle::bundle_ahk;
 use bundle_exe::bundle_exe;
