@@ -28,6 +28,10 @@ struct IconImage {
 }
 
 /// The resources to inject for a primary-icon replacement.
+//
+// Built on every platform by `build_icons`, but only read by the Win32 `write_resources`, so the
+// fields look dead on the non-windows build.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub struct IconResources {
     /// `RT_GROUP_ICON` id to (over)write - the interpreter's primary group.
     pub group_id: u16,

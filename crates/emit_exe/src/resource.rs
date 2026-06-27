@@ -33,7 +33,8 @@ pub struct EmbeddedResource {
     pub type_id: u16,
     /// Resource name (integer id or uppercased string).
     pub name: ResName,
-    /// Raw file bytes to embed.
+    /// Raw file bytes to embed. Only read by the Win32 `write_resources` (dead on non-windows).
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub data: Vec<u8>,
 }
 

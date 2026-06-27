@@ -33,10 +33,14 @@ use ahkbuild_link::BundlePlan;
 use ahkbuild_shake::ShakeResult;
 
 use icon::{IconIdAllocator, IconResources};
-use resource::{EmbeddedResource, ResName};
+use resource::EmbeddedResource;
+// Only referenced by the Win32 `write_resources`; the non-windows stub ignores its args.
+#[cfg(windows)]
+use resource::ResName;
 
 /// US-English language id (0x0409). Embedded resources are filed under this language, matching
 /// Ahk2Exe; the Win32 resource loader resolves them via the standard fallback.
+#[cfg(windows)]
 const LANG_EN_US: u16 = 0x0409;
 
 /// Assemble a standalone `.exe` from a linked, optimized program and the interpreter binary.
