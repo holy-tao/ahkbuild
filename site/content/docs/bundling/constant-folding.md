@@ -48,14 +48,21 @@ lib  := "lib" (A_PtrSize * 8)      ; "lib64"
 ```
 
 The evaluator handles literals, the constants `true`/`false` (which are just `1`/`0` in AHK),
-comparisons, arithmetic, bitwise and logical operators, and string concatenation. Anything it can't
-prove is constant is left alone. Floats are not substituted because the bundler may produce a different
+comparisons, arithmetic, bitwise and logical operators, and [string concatenation](#string-folding). Anything
+it can't prove is constant is left alone. Floats are not substituted because the bundler may produce a different
 string representation than the AutoHotkey interpreter would.
 
 Note that **Logical operators [short-circuit]**, so `A_IsCompiled && Setup()` folds to `false` when
 [`A_IsCompiled`] is false *without* evaluating `Setup()`.
 
 [short-circuit]: https://www.autohotkey.com/docs/alpha/Functions.htm#ShortCircuit
+
+### String folding
+
+`ahkbuild` does not always fold string literals. Since the goal is to ultimately reduce the size of the bundle,
+strings are evaluated before folding to see if replacements would reduce the size of the bundle or increase it. A
+very long string like a help text literal might *increase* the size of the bundle if it were replaced inline at
+every read site, as might a moderately-sized string which is read many times.
 
 ## User-defined constants
 
