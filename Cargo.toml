@@ -25,7 +25,7 @@ repository = "https://github.com/holy-tao/ahkbuild"
 [workspace.dependencies]
 # External
 tree-sitter = "0.26"
-tree-sitter-autohotkey = { path = "vendor/tree-sitter-autohotkey" }
+tree-sitter-autohotkey = "0.4.9"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 semver = "1.0.28"
