@@ -1240,15 +1240,20 @@ impl<'a> Lowerer<'a> {
     }
 
     fn build_expression_sequence(&mut self, node: Node) -> NodeId {
-        // A single-expression sequence is just that expression. Multi-expression sequences
-        // (comma operator) are rarely interesting to transforms; emit verbatim as Opaque.
-        // TODO: model multi-expression sequences if a pass needs their sub-references.
+        // A single-expression sequence is just that expression. A multi-expression sequence
+        // (comma operator) keeps each sub-expression as a child so references inside them -
+        // e.g. the imported names in an array literal `[A, B]` - stay visible to analyses.
         if node.named_child_count() == 1 {
             if let Some(child) = node.named_child(0) {
                 return self.build_node(child);
             }
         }
-        self.alloc(node, NodeKind::Opaque)
+        let mut exprs = Vec::new();
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            exprs.push(self.build_node(child));
+        }
+        self.alloc(node, NodeKind::ExpressionSequence { exprs })
     }
 
     // -----------------------------------------------------------------
@@ -1415,14 +1420,16 @@ impl<'a> Lowerer<'a> {
     }
 
     fn build_try(&mut self, node: Node) -> NodeId {
-        let mut try_body = None;
+        let try_body = match node.child_by_field_name("body") {
+            Some(body_node) => self.build_node(body_node),
+            None => self.alloc(node, NodeKind::Opaque),
+        };
         let mut catches = Vec::new();
         let mut else_body = None;
         let mut finally_body = None;
         let mut cursor = node.walk();
         for child in node.named_children(&mut cursor) {
             match child.kind() {
-                "block" if try_body.is_none() => try_body = Some(self.build_block(child)),
                 "catch_clause" => catches.push(self.build_catch(child)),
                 "else_statement" => {
                     else_body = child
@@ -1439,7 +1446,7 @@ impl<'a> Lowerer<'a> {
                 }
             }
         }
-        let try_body = try_body.unwrap_or_else(|| self.alloc(node, NodeKind::Opaque));
+
         self.alloc(
             node,
             NodeKind::TryStmt(TryStmt {

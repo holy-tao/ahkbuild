@@ -20,7 +20,7 @@ pub mod patch;
 use std::collections::{HashMap, HashSet};
 
 use ahkbuild_fold::{Branch, ConstValue, FoldResult};
-use ahkbuild_ir::node::ImportSource;
+use ahkbuild_ir::node::{ImportBinding, ImportSource};
 use ahkbuild_ir::{FileId, GroupId, NodeId, NodeKind, Program, Span};
 use ahkbuild_link::{BundlePlan, IncludeSplice};
 use ahkbuild_shake::ShakeResult;
@@ -193,6 +193,94 @@ pub fn emit_ahk(
     )
 }
 
+/// Which output module a [`EmitModule`] becomes when injected into a PE by the `.exe` backend.
+/// The entry group's primary module is the `RT_RCDATA` integer resource `1` the interpreter
+/// auto-runs (`*#1`); every other group is a named `RT_RCDATA` resource imported via
+/// `#Import "*<name>"`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ResourceName {
+    /// The entry group - `RT_RCDATA` id `1`, emitted without a `#Module` header.
+    Entry,
+    /// A non-entry group - `RT_RCDATA` named `<name>`, carrying its own `#Module <name>` header.
+    Named(String),
+}
+
+/// One emitted module destined for a PE resource: its [`ResourceName`] and its final
+/// (post-fold/shake, post-cosmetic) source text. Produced by [`emit_exe_modules`].
+#[derive(Clone, Debug)]
+pub struct EmitModule {
+    pub resource: ResourceName,
+    pub text: String,
+}
+
+/// The Win32 resource name a module is filed under. Uppercased because the resource loader matches
+/// string names uppercased (`FindResource` uppercases the query), so both the `RT_RCDATA` entry and
+/// the rewritten `#Import "*<name>"` must agree on the uppercase form.
+fn exe_resource_name(module_name: &str) -> String {
+    module_name.to_uppercase()
+}
+
+/// Emit each group as a **separate** module for the `.exe` backend, rather than concatenating
+/// them into one flat `.ahk`. The entry group becomes [`ResourceName::Entry`] (no header); every
+/// other group becomes a [`ResourceName::Named`] resource carrying its `#Module <name>` header.
+/// Every resolved cross-module `#Import` is rewritten to `#Import "*<name>"` so it resolves from
+/// the embedded resource at runtime. Fully-dead groups are dropped, exactly as the `.ahk` path
+/// does. The same fold/shake/comment-strip span edits apply; cosmetics run per module.
+pub fn emit_exe_modules(
+    program: &Program,
+    plan: &BundlePlan,
+    shake: Option<&ShakeResult>,
+    fold: Option<&FoldResult>,
+    options: &EmitOptions,
+) -> Vec<EmitModule> {
+    let ep = build_edit_plan(
+        program,
+        plan,
+        shake,
+        fold,
+        &InlineEdits::default(),
+        options.strip_comments,
+        ImportStrategy::Exe,
+    );
+
+    let mut out = Vec::new();
+    for (i, unit) in plan.units.iter().enumerate() {
+        if ep.dead_groups.contains(&unit.group) {
+            continue;
+        }
+        let group = &program.groups[unit.group.0 as usize];
+        let mut stack = Vec::new();
+        let body = expand(
+            program,
+            group.file,
+            &ep.rewrites,
+            &ep.deletions,
+            &ep.includes,
+            &ep.multiply,
+            &mut stack,
+        );
+
+        let (resource, text) = if i == 0 {
+            (ResourceName::Entry, body)
+        } else {
+            // Unlike the `.ahk` path, exe groups do not get synthetic `#Module` statements
+            match group
+                .modules
+                .first()
+                .and_then(|m| plan.module_names.get(&(unit.group, *m)))
+            {
+                Some(name) => (ResourceName::Named(exe_resource_name(name)), body),
+                None => (ResourceName::Named(String::new()), body),
+            }
+        };
+        out.push(EmitModule {
+            resource,
+            text: normalize_whitespace(&text, options.whitespace),
+        });
+    }
+    out
+}
+
 /// Emit an **intermediate**, re-parseable bundle for one round of the fixpoint driver: the same
 /// structural and annotation edits as [`emit_ahk`] (import redirects, module renames, `#Include`
 /// splices, branch collapses, tree-shaking deletions, constant substitutions) plus the inliner's
@@ -211,19 +299,37 @@ pub fn materialize(
     assemble(program, plan, shake, fold, inline, false, WsLevel::Off)
 }
 
-/// Shared assembly core behind [`emit_ahk`] (final) and [`materialize`] (intermediate). Collects
-/// every edit producer, splices `#Include`s, wraps imported groups in `#Module` blocks, and
-/// applies `strip_comments` / `whitespace` cosmetics per the caller's mode.
-#[allow(clippy::too_many_arguments)]
-fn assemble(
+/// How a backend rewrites a resolved `#Import`. The single-`.ahk` path redirects to the target's
+/// in-file module name; the `.exe` path redirects to the embedded resource spec `"*<name>"`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ImportStrategy {
+    Ahk,
+    Exe,
+}
+
+/// The per-file span edits a unit needs, shared by the `.ahk` (concatenating) and `.exe`
+/// (per-module) assembly loops. Built once by [`build_edit_plan`]; the only backend-specific
+/// input is the [`ImportStrategy`].
+struct EditPlan {
+    rewrites: HashMap<FileId, Vec<Edit>>,
+    deletions: HashMap<FileId, Vec<Edit>>,
+    includes: HashMap<FileId, Vec<(Span, IncludeSplice)>>,
+    multiply: HashSet<FileId>,
+    dead_groups: HashSet<GroupId>,
+}
+
+/// Collect every edit producer (import redirects, renames, inline edits, tree-shaking deletions,
+/// branch collapses, comment stripping, constant substitution) into an [`EditPlan`]. Identical
+/// for both backends save for how resolved imports are rewritten (`imports`).
+fn build_edit_plan(
     program: &Program,
     plan: &BundlePlan,
     shake: Option<&ShakeResult>,
     fold: Option<&FoldResult>,
     inline: &InlineEdits,
     strip_comments: bool,
-    whitespace: WsLevel,
-) -> String {
+    imports: ImportStrategy,
+) -> EditPlan {
     // Imports the shaker dropped must not also be rewritten - they're being deleted.
     let dropped: HashSet<NodeId> = shake
         .map(|s| s.dropped_imports.iter().copied().collect())
@@ -235,10 +341,10 @@ fn assemble(
         .map(|s| fully_dead_groups(program, s))
         .unwrap_or_default();
 
-    // Rewrite edits (import redirects + module renames) are always applied — they produce the
+    // Rewrite edits (import redirects + module renames) are always applied - they produce the
     // same text for every copy of a file. Tree-shaking deletions are kept separate so they can
     // be suppressed for a file spliced in more than once (see `multiply_spliced`).
-    let mut rewrites = import_edits(program, plan, &dropped);
+    let mut rewrites = import_edits(program, plan, &dropped, imports);
     add_rename_edits(program, plan, &mut rewrites);
     // The inliner's structural edits are rewrites (a call site replaced by the callee body); like
     // other rewrites they are identical in every copy of a multiply-spliced file. Empty today.
@@ -270,6 +376,45 @@ fn assemble(
     let includes = includes_by_file(program, plan, &dead_nodes);
     let multiply = multiply_spliced(plan);
 
+    EditPlan {
+        rewrites,
+        deletions,
+        includes,
+        multiply,
+        dead_groups,
+    }
+}
+
+/// Shared assembly core behind [`emit_ahk`] (final) and [`materialize`] (intermediate). Collects
+/// every edit producer, splices `#Include`s, wraps imported groups in `#Module` blocks, and
+/// applies `strip_comments` / `whitespace` cosmetics per the caller's mode.
+#[allow(clippy::too_many_arguments)]
+fn assemble(
+    program: &Program,
+    plan: &BundlePlan,
+    shake: Option<&ShakeResult>,
+    fold: Option<&FoldResult>,
+    inline: &InlineEdits,
+    strip_comments: bool,
+    whitespace: WsLevel,
+) -> String {
+    let ep = build_edit_plan(
+        program,
+        plan,
+        shake,
+        fold,
+        inline,
+        strip_comments,
+        ImportStrategy::Ahk,
+    );
+    let EditPlan {
+        rewrites,
+        deletions,
+        includes,
+        multiply,
+        dead_groups,
+    } = &ep;
+
     let mut out = String::new();
     for (i, unit) in plan.units.iter().enumerate() {
         // A group whose every module is dead is omitted entirely (its importer's `#Import`
@@ -280,7 +425,7 @@ fn assemble(
         let group = &program.groups[unit.group.0 as usize];
         let mut stack = Vec::new();
         let text = expand(
-            program, group.file, &rewrites, &deletions, &includes, &multiply, &mut stack,
+            program, group.file, rewrites, deletions, includes, multiply, &mut stack,
         );
 
         // The entry group's primary module stays the implicit `__Main` (no header). Every
@@ -588,6 +733,7 @@ fn import_edits(
     program: &Program,
     plan: &BundlePlan,
     dropped: &HashSet<NodeId>,
+    imports: ImportStrategy,
 ) -> HashMap<FileId, Vec<Edit>> {
     let mut edits: HashMap<FileId, Vec<Edit>> = HashMap::new();
     for ri in &plan.resolved_imports {
@@ -599,19 +745,34 @@ fn import_edits(
             continue;
         };
         let target = target.as_str();
-        // The span of the import's source spec — a bare name or a quoted path/string.
+        // The span of the import's source spec - a bare name or a quoted path/string.
         let NodeKind::ImportDirective(directive) = &program.arena[ri.node].kind else {
             continue;
         };
-        // Preserve the original spec's quoting. A quoted `Path` (`#Import "foo.ahk" {X}`)
-        // does *not* bring the module's default export into scope; an unquoted `Name`
-        // (`#Import foo {X}`) does. Rewriting a quoted path to a *bare* module name would
-        // flip that, auto-importing the default export - which collides at load time when an
-        // explicitly-imported name matches the module name (e.g. `#Import MsgPack {MsgPack}`).
-        // Keep the path form quoted so only the explicit names enter scope.
-        let (spec_span, replacement) = match &directive.source {
-            ImportSource::Name(s) => (*s, target.to_string()),
-            ImportSource::Path(s) => (*s, format!("\"{target}\"")),
+        let spec_span = match &directive.source {
+            ImportSource::Name(s) | ImportSource::Path(s) => *s,
+        };
+
+        let replacement = match imports {
+            ImportStrategy::Exe => {
+                // We need to rewrite unquoted `#Import Name` strings to quoted resource imports,
+                // but this drops the name binding, so add it back as a alias if no alias exists
+                // All exe resources are UPPER_CASE
+                let mut spec = format!("\"*{}\"", exe_resource_name(target));
+                if let ImportSource::Name(name_span) = &directive.source {
+                    if !matches!(directive.binding, ImportBinding::Alias(_)) {
+                        spec.push_str(" as ");
+                        spec.push_str(program.span_text(*name_span));
+                    }
+                }
+                spec
+            }
+            // Ahk backend preserves the original `#Import` statement's quoting, and does not
+            // have the same considerations as exe rewriting.
+            ImportStrategy::Ahk => match &directive.source {
+                ImportSource::Name(_) => target.to_string(),
+                ImportSource::Path(_) => format!("\"{target}\""),
+            },
         };
         // Already spelled exactly as the target spec: nothing to rewrite.
         if program.span_text(spec_span) == replacement {

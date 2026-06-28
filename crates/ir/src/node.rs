@@ -23,6 +23,13 @@ pub enum NodeKind {
     },
     /// A node the IR doesn't analyse; emitted verbatim from its span.
     Opaque,
+    /// A comma-separated expression sequence (the comma operator), e.g. the elements of an
+    /// array literal `[a, b]` or a parenthesized `(a, b)`. Modeled as a list of its
+    /// sub-expressions so name references inside each element stay visible to analyses
+    /// (reachability, folding); emitted verbatim from its span like any other node.
+    ExpressionSequence {
+        exprs: Vec<NodeId>,
+    },
 
     // --- Modules (v2.1) ---
     /// A module: the implicit `__Main` or a `#Module Name` block. May aggregate several

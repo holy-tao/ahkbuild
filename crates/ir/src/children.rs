@@ -40,6 +40,7 @@ fn collect(kind: &NodeKind, out: &mut Vec<NodeId>) {
         NodeKind::Block { body } => out.extend(body.iter().copied()),
         NodeKind::ExpressionStatement { expr } => out.push(*expr),
         NodeKind::Opaque => {}
+        NodeKind::ExpressionSequence { exprs } => out.extend(exprs.iter().copied()),
         NodeKind::Module(m) => out.extend(m.body.iter().copied()),
         NodeKind::ImportDirective(_) => {}
         NodeKind::IncludeDirective(_) => {}

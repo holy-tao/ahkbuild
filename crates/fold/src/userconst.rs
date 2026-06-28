@@ -55,13 +55,20 @@ pub fn collect(program: &Program, consts: &Constants) -> UserConsts {
         }
         // Apply in reverse index order so swap_remove keeps the remaining indices valid.
         for (i, v) in resolved.iter().rev() {
-            for &site in &pending[*i].reads {
-                result.reads.insert(site, v.clone());
+            if worth_substituting(
+                program,
+                v,
+                &pending[*i].reads,
+                !pending[*i].removable.is_empty(),
+            ) {
+                for &site in &pending[*i].reads {
+                    result.reads.insert(site, v.clone());
+                }
+                // Every read folded, so the declaration is now dead (when it is safe to delete).
+                result
+                    .dead_consts
+                    .extend(pending[*i].removable.iter().copied());
             }
-            // Every read folded, so the declaration is now dead (when it is safe to delete).
-            result
-                .dead_consts
-                .extend(pending[*i].removable.iter().copied());
             pending.swap_remove(*i);
         }
     }
@@ -649,6 +656,46 @@ impl<'a> Builder<'a> {
     }
 }
 
+/// Strings longer than this (in emitted bytes) are weighed by the cost model; anything shorter
+/// always folds. Short strings cost almost nothing to duplicate and keep simple concats (`"v" .
+/// X`) and the occasional string-valued branch foldable.
+const SHORT_STRING: usize = 24;
+
+/// Whether substituting `value` into every site in `reads` is worth the bytes it adds.
+///
+/// Folding rewrites each read's variable name to the rendered literal, and when `removable` also
+/// deletes the declaration. For numbers that is always a win (a literal is a handful of bytes and
+/// it unlocks branch shaking). A *string* literal, though, is copied verbatim into every read
+/// site, so a long one read in several places can grow the bundle for no benefit.
+///
+/// Fold a long string if, with a rendered length `lit` and read names totalling `names` bytes,
+/// `reads*lit - names` bytes and removal of the declaration recovers ~ `lit` (that is, if it
+/// would actually shrink the size of the bundle).
+fn worth_substituting(
+    program: &Program,
+    value: &ConstValue,
+    reads: &[NodeId],
+    removable: bool,
+) -> bool {
+    let ConstValue::Str(s) = value else {
+        return true;
+    };
+    let lit = emitted_str_len(s);
+    if lit <= SHORT_STRING {
+        return true;
+    }
+    let names: usize = reads.iter().map(|&r| program.text(r).trim().len()).sum();
+    let added = reads.len().saturating_mul(lit).saturating_sub(names);
+    let saved = if removable { lit } else { 0 };
+    added <= saved
+}
+
+/// Emitted byte length of a string constant, mirroring emit's `render_const`: the content wrapped
+/// in quotes, with each interior `"` re-escaped to the two-byte `` `" ``.
+fn emitted_str_len(s: &str) -> usize {
+    s.len() + s.matches('"').count() + 2
+}
+
 /// `Some(true)` for the plain definer `:=`; `Some(false)` for a compound assignment; `None` for
 /// a non-assignment operator.
 fn assign_kind(op: &str) -> Option<bool> {
@@ -1097,6 +1144,40 @@ mod tests {
         // The structural export guard still applies even under a trust directive.
         let src = ";@ahkbuild-const\nexport MAX := 64\nMsgBox(MAX)\n";
         assert!(dead_const_texts(src).is_empty());
+    }
+
+    // ~37 emitted bytes - safely past `SHORT_STRING`, so the cost model applies.
+    const LONG: &str = "\"this is a fairly long constant string\"";
+
+    #[test]
+    fn long_string_read_once_and_removable_folds() {
+        // One read plus decl deletion is a wash-or-win, so a long string still folds here.
+        let src = format!("f() {{\n  msg := {LONG}\n  return msg\n}}\n");
+        assert!(ident_folds(&src, "msg"));
+        assert_eq!(dead_const_texts(&src), vec![format!("msg := {LONG}")]);
+    }
+
+    #[test]
+    fn long_string_read_many_times_does_not_fold() {
+        // Three copies of a long string would dwarf what deleting the one declaration saves, so
+        // the constant is left in place (and therefore not removed).
+        let src = format!("f() {{\n  msg := {LONG}\n  A(msg)\n  B(msg)\n  return msg\n}}\n");
+        assert!(!ident_folds(&src, "msg"));
+        assert!(dead_const_texts(&src).is_empty());
+    }
+
+    #[test]
+    fn long_string_single_read_but_not_removable_does_not_fold() {
+        // The decl can't be deleted (exported), so inlining the long string is pure growth.
+        let src = format!("export MSG := {LONG}\nShow(MSG)\n");
+        assert!(!ident_folds(&src, "MSG"));
+    }
+
+    #[test]
+    fn short_string_folds_even_with_many_reads() {
+        // Below `SHORT_STRING`, duplication is negligible and folding stays on.
+        let src = "f() {\n  s := \"lib\"\n  A(s)\n  B(s)\n  return s\n}\n";
+        assert!(ident_folds(src, "s"));
     }
 
     #[test]

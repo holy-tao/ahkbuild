@@ -1,0 +1,14 @@
+[package]
+name = "ahkbuild-interpret"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+ureq = { version = "2", features = ["json"] }
+serde_json.workspace = true
+zip = "2"

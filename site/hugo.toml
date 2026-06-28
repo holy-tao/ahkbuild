@@ -1,0 +1,27 @@
+baseURL = 'https://holy-tao.github.io/ahkbuild/'
+title = 'ahkbuild'
+
+# Book theme. Install with:
+#   git submodule add https://github.com/alex-shpak/hugo-book site/themes/hugo-book
+theme = 'hugo-book'
+
+# GitHub Pages serves from a subpath; keep links relative-safe.
+canonifyURLs = false
+
+[markup.goldmark.renderer]
+  unsafe = true            # allow raw HTML in markdown (callouts, etc.)
+
+[markup.highlight]
+  noClasses = false        # class-based: styled by assets/_custom.scss (light + dark)
+
+[markup.tableOfContents]
+  startLevel = 2
+  endLevel = 3
+
+[params]
+  # Book theme options
+  BookTheme = 'auto'
+  BookToC = true
+  BookRepo = 'https://github.com/holy-tao/ahkbuild'
+  BookEditPath = 'edit/main/site/content'
+  BookSearch = true

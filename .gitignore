@@ -5,3 +5,9 @@ dist/
 
 # Rust
 /target/
+
+# Hugo's generated artifacts
+site/assets/_chroma-**.scss
+site/resources/_gen/
+site/public/
+site/.hugo_build.lock

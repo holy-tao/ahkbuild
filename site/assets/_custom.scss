@@ -1,0 +1,12 @@
+// Project overrides for hugo-book. This file shadows the theme's empty
+// assets/_custom.scss (Hugo's union filesystem: project assets win).
+
+// Syntax highlighting (Chroma, class-based - hugo.toml sets noClasses=false).
+// Light by default; the dark palette is swapped in under the *same* media query
+// hugo-book's auto theme uses to switch to its Nord dark scheme, so code blocks
+// track the rest of the page.
+@import "chroma-light";
+
+@media (prefers-color-scheme: dark) {
+  @import "chroma-dark";
+}
