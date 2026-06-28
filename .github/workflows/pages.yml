@@ -23,7 +23,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      HUGO_VERSION: 0.151.0   # extended (needed for the SCSS pipeline)
+      HUGO_VERSION: 0.158.0   # extended (needed for the SCSS pipeline)
     steps:
       - uses: actions/checkout@v7
         with:
