@@ -23,3 +23,5 @@ ahkbuild-interpret.workspace = true
 ahkbuild-config.workspace = true
 anyhow.workspace = true
 clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

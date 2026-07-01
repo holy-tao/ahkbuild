@@ -14,6 +14,7 @@ ahkbuild-fold.workspace = true
 ahkbuild-shake.workspace = true
 ahkbuild-config.workspace = true
 anyhow.workspace = true
+tracing.workspace = true
 # editpe is used only to *read* the interpreter's version-info resource and rebuild the
 # VS_VERSION_INFO bytes - never to write the PE (its resource-section rebuild corrupts the AHK
 # interpreter so it can no longer execute scripts). All PE mutation goes through Win32
