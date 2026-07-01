@@ -57,6 +57,8 @@ pub fn bundle_exe(
     config: &BuildConfig,
     output: &Path,
 ) -> Result<()> {
+    let _span = tracing::info_span!("bundle_exe", output = %output.display()).entered();
+
     // 1. Render each module to its final (minified, post-fold/shake) source text.
     let options = EmitOptions {
         strip_comments: true,
@@ -64,6 +66,7 @@ pub fn bundle_exe(
     };
     let modules = emit_exe_modules(program, plan, shake, fold, &options);
     anyhow::ensure!(!modules.is_empty(), "no modules to embed");
+    tracing::debug!(modules = modules.len(), "rendered modules");
 
     // 2. Build the version-info resource bytes from the interpreter's existing one (read-only use
     //    of editpe) overlaid with the project's metadata.
@@ -87,6 +90,7 @@ pub fn bundle_exe(
         })?;
         files.push((fi.name.clone(), data));
     }
+    tracing::debug!(count = files.len(), "scanned FileInstall sources");
 
     // 4. Build the icon resources: `exe.icon` replaces the interpreter's primary group, and each
     //    `resources.icons` entry adds a new group under its explicit id. All share one image-id
@@ -109,6 +113,13 @@ pub fn bundle_exe(
 
     // 6. Copy the interpreter to the output path, then inject resources into the copy.
     copy_interpreter(interpreter, output)?;
+    tracing::debug!(
+        modules = modules.len(),
+        files = files.len(),
+        icons = icons.len(),
+        extras = extras.len(),
+        "injecting resources",
+    );
 
     write_resources(
         output,
@@ -141,6 +152,11 @@ fn copy_interpreter(interpreter: &Path, output: &Path) -> Result<()> {
         match std::fs::copy(interpreter, output) {
             Ok(_) => return Ok(()),
             Err(e) if is_sharing_violation(&e) => {
+                tracing::debug!(
+                    attempt,
+                    attempts = ATTEMPTS,
+                    "interpreter locked, retrying copy"
+                );
                 last_err = Some(e);
                 if attempt < ATTEMPTS {
                     std::thread::sleep(delay);
@@ -245,10 +261,10 @@ fn build_icons(interpreter: &Path, config: &BuildConfig) -> Result<Vec<IconResou
     if let Some(ico_path) = config.exe.icon.as_deref() {
         let ico_bytes = std::fs::read(ico_path)
             .with_context(|| format!("reading icon file {}", ico_path.display()))?;
-        eprintln!(
-            "icon: replacing primary group {} ({} existing image(s))",
-            layout.group_id,
-            layout.member_ids.len()
+        tracing::debug!(
+            group = layout.group_id,
+            images = layout.member_ids.len(),
+            "icon: replacing primary group",
         );
         out.push(
             icon::build_icon_resources(&ico_bytes, layout.group_id, &layout.member_ids, &mut alloc)
@@ -275,18 +291,19 @@ fn build_icons(interpreter: &Path, config: &BuildConfig) -> Result<Vec<IconResou
             anyhow::bail!("resources.icons: duplicate icon id {}", ic.id);
         }
         if ic.id < layout.group_id {
-            eprintln!(
-                "icon: warning: id {} is below the primary group {}; it will become the icon \
-                 Windows shows for the .exe, overriding exe.icon",
-                ic.id, layout.group_id
+            tracing::warn!(
+                id = ic.id,
+                primary = layout.group_id,
+                "icon: id is below the primary group; it will become the icon Windows shows \
+                 for the .exe, overriding exe.icon",
             );
         }
 
         let ico_bytes = std::fs::read(&ic.path)
             .with_context(|| format!("reading icon file {}", ic.path.display()))?;
-        eprintln!(
-            "icon: adding group {} (load via LoadPicture(A_ScriptFullPath, \"Icon-{}\"))",
-            ic.id, ic.id
+        tracing::debug!(
+            id = ic.id,
+            "icon: adding group (load via LoadPicture(A_ScriptFullPath, \"Icon-<id>\"))",
         );
         out.push(
             icon::build_icon_resources(&ico_bytes, ic.id, &[], &mut alloc)

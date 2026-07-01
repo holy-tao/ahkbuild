@@ -163,7 +163,7 @@ pub fn install(version: &AhkVersion, bitness: &Bitness) -> Result<PathBuf> {
 
     // 1. Check cache
     if exe.exists() {
-        eprintln!("Using cached interpreter: {}", exe.display());
+        tracing::info!(path = %exe.display(), "using cached interpreter");
         return Ok(exe);
     }
 
@@ -181,44 +181,44 @@ pub fn install(version: &AhkVersion, bitness: &Bitness) -> Result<PathBuf> {
         version.minor,
         version.canonical()
     );
-    eprintln!("Trying autohotkey.com: {}", ahkcom_url);
+    tracing::info!(url = %ahkcom_url, "trying autohotkey.com");
     match download_and_extract(&ahkcom_url, &dir) {
         Ok(()) if exe.exists() => {
-            eprintln!("Installed from autohotkey.com");
+            tracing::info!("installed from autohotkey.com");
             return Ok(exe);
         }
         Ok(()) => {
-            eprintln!(
-                "Download succeeded but {} not found in zip, trying next source",
-                bitness.exe_name()
+            tracing::debug!(
+                exe = bitness.exe_name(),
+                "download succeeded but exe not found in zip, trying next source"
             );
         }
         Err(e) => {
-            eprintln!("autohotkey.com failed ({}), trying next source", e);
+            tracing::debug!(error = %e, "autohotkey.com failed, trying next source");
         }
     }
 
     // 3. Try GitHub releases (v2.0 only; v2.1 alphas are tagged but have no formal release)
     if !is_v21_plus {
-        eprintln!("Trying GitHub releases...");
+        tracing::info!("trying GitHub releases");
         match github::release_zip_url(version) {
             Ok(url) => match download_and_extract(&url, &dir) {
                 Ok(()) if exe.exists() => {
-                    eprintln!("Installed from GitHub releases");
+                    tracing::info!("installed from GitHub releases");
                     return Ok(exe);
                 }
-                Ok(()) => eprintln!(
-                    "GitHub download succeeded but {} not found in zip",
-                    bitness.exe_name()
+                Ok(()) => tracing::debug!(
+                    exe = bitness.exe_name(),
+                    "GitHub download succeeded but exe not found in zip"
                 ),
-                Err(e) => eprintln!("GitHub download failed: {}", e),
+                Err(e) => tracing::debug!(error = %e, "GitHub download failed"),
             },
-            Err(e) => eprintln!("GitHub release lookup failed: {}", e),
+            Err(e) => tracing::debug!(error = %e, "GitHub release lookup failed"),
         }
     }
 
     // 4. Compile from source (required for v2.1 in CI; slow but reliable)
-    eprintln!("Building AutoHotkey {} from source...", version.canonical());
+    tracing::info!(version = %version.canonical(), "building AutoHotkey from source");
     build::compile_from_source(version, bitness, &dir)
         .context("failed to compile AutoHotkey from source")?;
 

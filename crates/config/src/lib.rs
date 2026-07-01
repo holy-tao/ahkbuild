@@ -304,6 +304,7 @@ pub fn find_config(start: &Path) -> Result<Option<PathBuf>> {
     loop {
         let candidate = dir.join("ahkbuild.json");
         if candidate.is_file() {
+            tracing::info!(path = %candidate.display(), "found ahkbuild.json");
             return Ok(Some(candidate));
         }
         match dir.parent() {

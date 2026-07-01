@@ -94,6 +94,7 @@ pub fn link_entry(entry: &Path, search: &SearchPath) -> Result<LinkOutput> {
         if loaded.contains_key(&path) {
             continue;
         }
+        tracing::debug!(file = %path.display(), "loading");
         let text = read_source(&path)?;
         // Load + parse the file, resolve its `#Include` graph (loading included files into the
         // shared source map), then lower the group splicing those files in.

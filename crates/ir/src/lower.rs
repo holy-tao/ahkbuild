@@ -422,9 +422,9 @@ impl<'a> Lowerer<'a> {
 
     fn warn_trailing(&self, pending: &[DirectiveComment]) {
         for d in pending {
-            eprintln!(
-                "warning: directive `;@{}` has no following statement",
-                self.slice(d.name)
+            tracing::warn!(
+                directive = self.slice(d.name),
+                "directive `;@<name>` has no following statement",
             );
         }
     }
