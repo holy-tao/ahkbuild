@@ -96,11 +96,17 @@ pub struct Converged {
 /// `consts` seeds constant folding; `optimize` runs fold + shake (set `false` for a byte-faithful
 /// bundle, as `--no-tree-shake` does).
 pub fn converge(link_out: LinkOutput, consts: Constants, optimize: bool) -> Result<Converged> {
+    let _span = tracing::info_span!("converge", optimize).entered();
     let mut facts = Facts::new(consts);
     let mut program = link_out.program;
     let mut plan = link_out.plan;
 
     for round_no in 0..=MAX_STRUCTURAL_ROUNDS {
+        tracing::debug!(
+            round = round_no,
+            groups = program.groups.len(),
+            "structural round"
+        );
         // Inner loop: settle the side-table passes over the current IR.
         let round = run_inner_fixpoint(&program, &plan, &facts, optimize);
 
@@ -182,6 +188,16 @@ fn run_inner_fixpoint(
         if round.len() == before {
             break;
         }
+    }
+    if let (Some(f), Some(s)) = (round.fold.as_ref(), round.shake.as_ref()) {
+        tracing::debug!(
+            literals = f.literals.len(),
+            branches = f.branches.len(),
+            dead = s.dead.len(),
+            dead_modules = s.dead_modules.len(),
+            dropped_imports = s.dropped_imports.len(),
+            "fold/shake settled",
+        );
     }
     round
 }

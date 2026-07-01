@@ -5,14 +5,12 @@ weight: 1
 
 # CLI reference
 
-The `ahkbuild` binary has three subcommands:
-
 - [`ahkbuild preprocess`](#ahkbuild-preprocess)
 - [`ahkbuild bundle ahk`](#ahkbuild-bundle-ahk)
 - [`ahkbuild bundle exe`](#ahkbuild-bundle-exe)
 - [`ahkbuild interpreter`](#ahkbuild-interpreter)
-
-The global `-d` / `--debug` flag (repeatable) raises log verbosity for any of them.
+- [Global Flags](#global-flags)
+  - [Logging](#logging)
 
 ## `ahkbuild preprocess`
 
@@ -88,3 +86,25 @@ ahkbuild interpreter prune [--version <v>] [--bitness 32|64]
 | `install <version>` | Download or build an interpreter into the cache. `--bitness` limits it to one architecture; both are cached otherwise. |
 | `list` | Show the cached versions and their bitnesses. |
 | `prune` | Remove cached interpreters. `--version` and `--bitness` narrow what is removed; everything is removed if both are omitted. |
+
+## Global Flags
+
+### Logging
+
+| Flag | Description |
+| --- | --- |
+| `-v`, `--verbose` | Raise verbosity. Repeatable: `-v` = info, `-vv` = debug (also shows each log's source), `-vvv` = trace. Default shows warnings and errors only. |
+| `-q`, `--quiet` | Suppress everything except errors. Takes precedence over `-v`. |
+| `--log-file <path>` | Additionally write a timestamped, debug-level log to `<path>` (ANSI-free), regardless of console verbosity. None by default. |
+
+For fine-grained, per-module control, set the `AHKBUILD_LOG` environment variable (or the
+conventional `RUST_LOG`) to a [`tracing` env-filter](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html)
+directive. When set, it overrides the `-v` / `--quiet` level for the console:
+
+```bash
+# Debug-level logs from the linker only; everything else stays quiet.
+AHKBUILD_LOG=ahkbuild_link=debug ahkbuild bundle ahk app.ahk
+
+# Trace everything.
+AHKBUILD_LOG=trace ahkbuild bundle exe
+```

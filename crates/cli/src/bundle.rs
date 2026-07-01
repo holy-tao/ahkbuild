@@ -25,15 +25,15 @@ pub(crate) fn bundle_ahk(
     // Link modules
     let out = ahkbuild_link::link_entry(input, &search)?;
 
-    eprintln!(
-        "linked {} ({} groups, {} warnings)",
-        input.display(),
-        out.program.groups.len(),
-        out.warnings.len(),
+    tracing::info!(
+        file = %input.display(),
+        groups = out.program.groups.len(),
+        warnings = out.warnings.len(),
+        "linked",
     );
 
     for w in &out.warnings {
-        eprintln!("warning: {w}");
+        tracing::warn!("{w}");
     }
 
     // Build-time constants. `A_PtrSize` is taken from `--bitness`, else from a bitness-pinned

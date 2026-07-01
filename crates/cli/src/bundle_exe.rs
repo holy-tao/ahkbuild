@@ -64,7 +64,7 @@ pub(crate) fn bundle_exe(
                 )
             })?;
 
-    eprintln!("interpreter: {}", interp.display());
+    tracing::info!(path = %interp.display(), "resolved interpreter");
 
     // 4. Link
     let script_dir = entry
@@ -76,14 +76,14 @@ pub(crate) fn bundle_exe(
     let search = ahkbuild_link::SearchPath::from_env(&builtins);
     let linked = ahkbuild_link::link_entry(entry, &search)?;
 
-    eprintln!(
-        "linked {} ({} groups, {} warnings)",
-        entry.display(),
-        linked.program.groups.len(),
-        linked.warnings.len(),
+    tracing::info!(
+        file = %entry.display(),
+        groups = linked.program.groups.len(),
+        warnings = linked.warnings.len(),
+        "linked",
     );
     for w in &linked.warnings {
-        eprintln!("warning: {w}");
+        tracing::warn!("{w}");
     }
 
     // 5. Fold + shake (A_IsCompiled = true, A_PtrSize from bitness)
@@ -134,7 +134,7 @@ pub(crate) fn bundle_exe(
         &out_path,
     )?;
 
-    eprintln!("wrote {}", out_path.display());
+    tracing::info!(path = %out_path.display(), "wrote exe");
 
     // 9. Post-bundle scripts (e.g. code signing, UPX/MPRESS compression) run on the finished exe.
     run_scripts(Stage::Post, &config.scripts.post_bundle, &ctx)?;

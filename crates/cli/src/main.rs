@@ -12,6 +12,7 @@ use ahkbuild_interpret::{AhkVersion, Bitness};
 
 mod bundle;
 mod bundle_exe;
+mod logging;
 mod scripts;
 
 use bundle::bundle_ahk;
@@ -23,8 +24,18 @@ use bundle_exe::bundle_exe;
     about = "AutoHotkey v2.1 module-aware bundler (WIP)"
 )]
 struct Cli {
-    #[arg(short, long, action = clap::ArgAction::Count)]
-    debug: u8,
+    /// Increase log verbosity (repeatable): `-v` info, `-vv` debug, `-vvv` trace. Overridden
+    /// by the AHKBUILD_LOG (or RUST_LOG) env filter when set.
+    #[arg(short, long, action = clap::ArgAction::Count, global = true)]
+    verbose: u8,
+
+    /// Silence all diagnostics except errors. Takes precedence over `-v`.
+    #[arg(short, long, global = true)]
+    quiet: bool,
+
+    /// Also write a timestamped, debug-level log to this file (in addition to stderr).
+    #[arg(long, value_name = "PATH", global = true)]
+    log_file: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Commands,
@@ -149,6 +160,8 @@ enum Commands {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    logging::init(cli.verbose, cli.quiet, cli.log_file.as_deref())?;
 
     let result = match &cli.command {
         Commands::Preprocess { input, output } => {

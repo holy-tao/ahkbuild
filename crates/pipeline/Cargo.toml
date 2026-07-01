@@ -14,6 +14,7 @@ ahkbuild-fold.workspace = true
 ahkbuild-shake.workspace = true
 ahkbuild-emit.workspace = true
 anyhow.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

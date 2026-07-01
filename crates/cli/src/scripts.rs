@@ -153,7 +153,11 @@ fn run_one(
     }
 
     let (program, args) = argv.split_first().expect("command validated non-empty");
-    eprintln!("{}-bundle: {}", stage.as_str(), argv.join(" "));
+
+    // A span tags every ahkbuild log emitted while this script runs, so its surrounding
+    // diagnostics are attributable to a specific build-script stage.
+    let _span = tracing::info_span!("build_script", stage = stage.as_str()).entered();
+    tracing::info!(cmd = %argv.join(" "), "running");
 
     // Pipe the child's stdout/stderr and relay them onto ours, rather than letting the child
     // inherit ahkbuild's standard handles. The child then always writes to a clean pipe Rust

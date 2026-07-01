@@ -36,7 +36,7 @@ fn compile_windows(version: &AhkVersion, bitness: &Bitness, dest: &Path) -> Resu
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("temp dir path is not valid UTF-8"))?;
 
-    eprintln!("Cloning AutoHotkey/AutoHotkey at tag {}...", tag);
+    tracing::info!(%tag, "cloning AutoHotkey/AutoHotkey");
     let status = Command::new("git")
         .args([
             "clone",
@@ -56,7 +56,7 @@ fn compile_windows(version: &AhkVersion, bitness: &Bitness, dest: &Path) -> Resu
         Bitness::X64 => ("x64", "AutoHotkey64.exe"),
     };
 
-    eprintln!("Building Release|{}...", platform);
+    tracing::info!(platform, "building Release configuration");
     let status = Command::new(&msbuild)
         .args([
             "AutoHotkeyx.sln",
@@ -84,11 +84,11 @@ fn compile_windows(version: &AhkVersion, bitness: &Bitness, dest: &Path) -> Resu
 
     std::fs::remove_dir_all(&temp_dir).ok();
 
-    eprintln!(
-        "AutoHotkey {} ({}) built successfully to: {}",
-        version.canonical(),
+    tracing::info!(
+        version = %version.canonical(),
         platform,
-        dest.display()
+        dest = %dest.display(),
+        "built AutoHotkey from source",
     );
     Ok(())
 }
