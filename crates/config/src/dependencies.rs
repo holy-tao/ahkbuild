@@ -12,6 +12,43 @@ pub struct DependencySpec {
     pub source: DependencySource,
     /// Sub-directory within the fetched tree that holds the module (`#Import Name` maps here).
     pub subdir: Option<String>,
+    /// Local import name for the dependency, overriding the manifest key. The key is the canonical
+    /// package name (often the repo/tarball name, e.g. `yaml.ahk`), which may not be a valid AHK
+    /// identifier; `alias` lets the project import it under a clean unquoted name (`#Import yaml`).
+    /// When set it must be a valid AHK identifier; when unset the key itself is the import name.
+    pub alias: Option<String>,
+}
+
+impl DependencySpec {
+    /// The name this dependency is imported under (`#Import <name>`) and exposed as in the
+    /// link-farm: the `alias` when set, otherwise the manifest `key`.
+    pub fn import_name<'a>(&'a self, key: &'a str) -> &'a str {
+        self.alias.as_deref().unwrap_or(key)
+    }
+}
+
+/// Validate that `alias` is a usable AHK module identifier
+/// See: https://www.autohotkey.com/docs/alpha/Concepts.htm#names
+fn validate_alias(alias: &str) -> Result<(), String> {
+    let is_start = |c: char| c.is_ascii_alphabetic() || c == '_' || !c.is_ascii();
+    let is_part = |c: char| c.is_ascii_alphanumeric() || c == '_' || !c.is_ascii();
+    let mut chars = alias.chars();
+    match chars.next() {
+        Some(c) if is_start(c) => {}
+        _ => {
+            return Err(format!(
+                "dependency alias {alias:?} is not a valid AHK identifier: it must start with a \
+                 letter, underscore, or non-ASCII character"
+            ))
+        }
+    }
+    if !chars.all(is_part) {
+        return Err(format!(
+            "dependency alias {alias:?} is not a valid AHK identifier: only letters, digits, \
+             underscore, and non-ASCII characters are allowed"
+        ));
+    }
+    Ok(())
 }
 
 /// Where a dependency's bytes come from. `git` is a real clone of a `.git` URL (any forge);
@@ -55,9 +92,14 @@ impl<'de> Deserialize<'de> for DependencySpec {
             sha256: Option<String>,
             // Common.
             subdir: Option<String>,
+            alias: Option<String>,
         }
 
         let r = Repr::deserialize(d)?;
+
+        if let Some(alias) = &r.alias {
+            validate_alias(alias).map_err(D::Error::custom)?;
+        }
 
         // Exactly one source key must be present.
         let kinds = [
@@ -156,6 +198,7 @@ impl<'de> Deserialize<'de> for DependencySpec {
         Ok(DependencySpec {
             source,
             subdir: r.subdir,
+            alias: r.alias,
         })
     }
 }
@@ -234,6 +277,40 @@ mod tests {
         assert!(serde_json::from_str::<BuildConfig>(
             r#"{"interpreter": {"version": "2.1-alpha.27"},
                 "dependencies": {"X": {"git": "u", "tag": "t", "branch": "b"}}}"#,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn alias_overrides_import_name() {
+        let c = parse(
+            r#"{
+            "interpreter": {"version": "2.1-alpha.27"},
+            "dependencies": {
+                "yaml.ahk": {"git": "https://github.com/x/yaml.ahk.git", "alias": "yaml"},
+                "Plain":    {"git": "https://github.com/x/y.git"}
+            }
+        }"#,
+        );
+        // Aliased key imports under the alias; an un-aliased key imports under the key itself.
+        assert_eq!(c.dependencies["yaml.ahk"].alias.as_deref(), Some("yaml"));
+        assert_eq!(c.dependencies["yaml.ahk"].import_name("yaml.ahk"), "yaml");
+        assert_eq!(c.dependencies["Plain"].alias, None);
+        assert_eq!(c.dependencies["Plain"].import_name("Plain"), "Plain");
+    }
+
+    #[test]
+    fn invalid_alias_is_rejected() {
+        // A dot makes it an invalid AHK identifier (and would escape the link-farm component).
+        assert!(serde_json::from_str::<BuildConfig>(
+            r#"{"interpreter": {"version": "2.1-alpha.27"},
+                "dependencies": {"X": {"git": "u", "alias": "not.valid"}}}"#,
+        )
+        .is_err());
+        // Leading digit is also rejected.
+        assert!(serde_json::from_str::<BuildConfig>(
+            r#"{"interpreter": {"version": "2.1-alpha.27"},
+                "dependencies": {"X": {"git": "u", "alias": "1yaml"}}}"#,
         )
         .is_err());
     }

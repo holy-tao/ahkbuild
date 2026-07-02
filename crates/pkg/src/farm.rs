@@ -56,8 +56,11 @@ pub fn materialize(project_root: &Path, config: &BuildConfig, lock: &Lockfile) -
             "dependency {name:?} target {} does not exist",
             target.display()
         );
-        let link = modules.join(name);
-        tracing::debug!(name = %name, target = %target.display(), "linking dependency");
+        // The farm exposes each dependency under its import name (the `alias`, or the key) so
+        // `#Import <name>` resolves here via `AhkImportPath`.
+        let import_name = spec.import_name(name);
+        let link = modules.join(import_name);
+        tracing::debug!(name = %import_name, target = %target.display(), "linking dependency");
         make_link(&link, &target)
             .with_context(|| format!("linking {} -> {}", link.display(), target.display()))?;
         count += 1;

@@ -25,8 +25,9 @@ pub struct BuildConfig {
     /// (forward-compat) reserved to feed the preprocessor/fold pass for conditional compilation.
     #[serde(default)]
     pub defines: BTreeMap<String, DefineValue>,
-    /// Module dependencies, keyed by the logical import name written in `#Import Name`. Each value
-    /// names exactly one source (git / gist / tarball / path). Resolved and pinned by
+    /// Module dependencies, keyed by the canonical package name. Each value names exactly one
+    /// source (git / gist / tarball / path) and is imported as `#Import <key>` unless it sets an
+    /// `alias` (for keys that aren't valid AHK identifiers, e.g. `yaml.ahk`). Resolved and pinned by
     /// `ahkbuild package restore`; see `crates/pkg`.
     #[serde(default)]
     pub dependencies: BTreeMap<String, DependencySpec>,

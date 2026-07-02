@@ -74,6 +74,31 @@ fn subdir_selects_the_module_root() {
 }
 
 #[test]
+fn alias_links_under_the_import_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+
+    // A package whose canonical name (`yaml.ahk`) is not a valid AHK identifier.
+    write(&root.join("dep").join("yaml.ahk"), "#Module yaml\n");
+
+    write(
+        &root.join("ahkbuild.json"),
+        r#"{
+            "interpreter": {"version": "2.1-alpha.27"},
+            "dependencies": {"yaml.ahk": {"path": "dep", "alias": "yaml"}}
+        }"#,
+    );
+
+    let config = ahkbuild_config::load(&root.join("ahkbuild.json")).unwrap();
+    restore(&config, root, RestoreOptions::default()).unwrap();
+
+    // The farm exposes the tree under the alias, not the `yaml.ahk` key, so `#Import yaml` resolves.
+    let linked = modules_dir(root).join("yaml").join("yaml.ahk");
+    assert!(linked.is_file(), "{} should resolve", linked.display());
+    assert!(!modules_dir(root).join("yaml.ahk").exists());
+}
+
+#[test]
 fn restore_is_idempotent() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
