@@ -13,6 +13,7 @@ members = [
     "crates/cli",
     "crates/interpret",
     "crates/config",
+    "crates/pkg",
 ]
 exclude = ["vendor/tree-sitter-autohotkey"]
 
@@ -47,3 +48,4 @@ ahkbuild-emit-exe = { path = "crates/emit_exe" }
 ahkbuild-pipeline = { path = "crates/pipeline" }
 ahkbuild-interpret = { path = "crates/interpret" }
 ahkbuild-config = { path = "crates/config" }
+ahkbuild-pkg = { path = "crates/pkg" }
