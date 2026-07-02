@@ -6,7 +6,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
+mod dependencies;
+
 pub use ahkbuild_interpret::{AhkVersion, Bitness};
+pub use dependencies::{DependencySource, DependencySpec, GitSelector};
 
 #[derive(Debug, Deserialize)]
 pub struct BuildConfig {
@@ -22,6 +25,11 @@ pub struct BuildConfig {
     /// (forward-compat) reserved to feed the preprocessor/fold pass for conditional compilation.
     #[serde(default)]
     pub defines: BTreeMap<String, DefineValue>,
+    /// Module dependencies, keyed by the logical import name written in `#Import Name`. Each value
+    /// names exactly one source (git / gist / tarball / path). Resolved and pinned by
+    /// `ahkbuild package restore`; see `crates/pkg`.
+    #[serde(default)]
+    pub dependencies: BTreeMap<String, DependencySpec>,
 }
 
 impl BuildConfig {
@@ -336,6 +344,12 @@ fn resolve_paths(config: &mut BuildConfig, root: &Path) {
     for r in &mut config.resources.extra {
         resolve(&mut r.path, root);
     }
+    // `path` dependencies resolve against the project root, like every other config path.
+    for dep in config.dependencies.values_mut() {
+        if let DependencySource::Path { path } = &mut dep.source {
+            resolve(path, root);
+        }
+    }
     // Build-script commands are argv strings, not paths: relative paths in them resolve naturally
     // against the script working directory (the project root), so nothing is rewritten here.
 }
@@ -520,6 +534,24 @@ mod tests {
         }"#,
         );
         assert!(c.defines_env().is_err());
+    }
+
+    #[test]
+    fn path_dependency_resolves_against_root() {
+        let mut c = parse(
+            r#"{"interpreter": {"version": "2.1-alpha.27"},
+                "dependencies": {"X": {"path": "../shared/X"}}}"#,
+        );
+        // A concrete absolute root for the platform under test.
+        let root = std::env::current_dir().unwrap().join("proj").join("root");
+        resolve_paths(&mut c, &root);
+        match &c.dependencies["X"].source {
+            DependencySource::Path { path } => {
+                assert!(path.is_absolute(), "{} should be absolute", path.display());
+                assert!(path.ends_with("shared/X") || path.ends_with("shared\\X"));
+            }
+            other => panic!("expected path source, got {other:?}"),
+        }
     }
 
     #[test]
