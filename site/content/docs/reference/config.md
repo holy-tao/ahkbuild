@@ -80,6 +80,7 @@ may come from the config or from `--input`:
 | [`resources`](#resources) | object | No | Extra icons and embedded resources. |
 | [`scripts`](#scripts) | object | No | Pre/post-bundle hooks. |
 | [`defines`](#defines) | object | No | User build variables. |
+| [`dependencies`](#dependencies) | object | No | Module dependencies, keyed by import name. |
 
 ¹ `entry` is optional in the file but must be supplied somehow - either here or
 via `--input`. It is an error if neither is present.
@@ -237,3 +238,38 @@ A map of build variables exposed to build scripts (as environment variables and 
 Values may be strings, numbers, or booleans, but are always flattened to strings (`1`, `1.5`, `true`,
 `release`). Must match `[A-Za-z_][A-Za-z0-9_]*` and may **not** start with `AHKBUILD_` (that prefix is
 reserved for future use).
+
+## `dependencies`
+
+Module dependencies, keyed by the **logical import name** written in `#Import Name`. Each value
+names exactly one source. Resolved, pinned to `ahkbuild.lock`, and materialized into the
+`.ahkbuild/modules/` link-farm by [`ahkbuild package restore`]({{< relref "/docs/reference/cli#ahkbuild-package" >}}).
+See [Dependencies]({{< relref "/docs/dependencies" >}}) for the full model.
+
+```json
+{
+  "dependencies": {
+    "GuiEnhancer": { "git": "https://github.com/nperovic/GuiEnhancerKit.git", "tag": "v1.0.3" },
+    "gistCode":    { "gist": "a1b2c3d4e5f6", "rev": "deadbeef" },
+    "Rapid":       { "tarball": "https://example.com/rapid.zip", "sha256": "…", "subdir": "src" },
+    "MyLocal":     { "path": "../shared/MyLocal" }
+  }
+}
+```
+
+Each value sets **exactly one** source key (`git`, `gist`, `tarball`, or `path`); setting zero or
+more than one is an error.
+
+| Source key | Companion fields | Description |
+| --- | --- | --- |
+| `git` | one of `tag` / `branch` / `rev` (optional) | A `.git` clone URL for any forge. No selector uses the default branch HEAD. Pinned to a commit SHA in the lock. |
+| `gist` | `rev` (optional) | A gist id (gists are git repos). `rev` pins a commit; latest HEAD otherwise. |
+| `tarball` | `sha256` (**required**) | A `.zip` or `.tar.gz` URL. `sha256` of the archive bytes is verified on download. |
+| `path` | - | A local directory (relative paths resolve against the project root). Not reproducible, so **excluded from the lockfile**. |
+
+| Common field | Type | Description |
+| --- | --- | --- |
+| `subdir` | string | Sub-directory within the fetched tree that holds the module, when it is not the tree root. |
+
+`sha256` is rejected on non-tarball sources; `tag`/`branch`/`rev` are rejected on `tarball`/`path`;
+`git` accepts at most one selector.

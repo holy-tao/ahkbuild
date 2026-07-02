@@ -9,6 +9,8 @@ weight: 1
 - [`ahkbuild bundle ahk`](#ahkbuild-bundle-ahk)
 - [`ahkbuild bundle exe`](#ahkbuild-bundle-exe)
 - [`ahkbuild interpreter`](#ahkbuild-interpreter)
+- [`ahkbuild package`](#ahkbuild-package)
+- [`ahkbuild run`](#ahkbuild-run)
 - [Global Flags](#global-flags)
   - [Logging](#logging)
 
@@ -86,6 +88,50 @@ ahkbuild interpreter prune [--version <v>] [--bitness 32|64]
 | `install <version>` | Download or build an interpreter into the cache. `--bitness` limits it to one architecture; both are cached otherwise. |
 | `list` | Show the cached versions and their bitnesses. |
 | `prune` | Remove cached interpreters. `--version` and `--bitness` narrow what is removed; everything is removed if both are omitted. |
+
+## `ahkbuild package`
+
+Manages [module dependencies]({{< relref "/docs/dependencies" >}}) declared in
+[`ahkbuild.json`]({{< relref "/docs/reference/config#dependencies" >}}): resolves them to an
+`ahkbuild.lock`, populates the content-addressed store under `~/.ahkbuild/packages/`, and builds the
+per-project `.ahkbuild/modules/` link-farm.
+
+```bash
+ahkbuild package restore [--config <path>] [--locked]
+```
+
+| Subcommand | Description |
+| --- | --- |
+| `restore` | Resolve, pin, and fetch dependencies, then (re)build the link-farm. |
+
+| Flag | Description |
+| --- | --- |
+| `--config <path>` | Path to `ahkbuild.json`. Discovered by walking up from the cwd if omitted. |
+| `--locked` | CI mode: fail if `ahkbuild.lock` is missing or would change, instead of updating it. The store may still be populated from the existing lock. |
+
+## `ahkbuild run`
+
+Runs an entry script under the project's configured interpreter with dependencies resolved:
+restores dependencies, resolves (and auto-installs) the interpreter, points
+[`AhkImportPath`]({{< relref "/docs/dependencies" >}}) at the link-farm, and launches the script.
+
+```bash
+ahkbuild run [entry] [flags] [-- <script args>]
+```
+
+| Argument | Description |
+| --- | --- |
+| `entry` | Entry script. Overrides the `entry` field in `ahkbuild.json`. |
+| `args` | Everything after `--` is passed through to the script. |
+
+| Flag | Overrides | Description |
+| --- | --- | --- |
+| `--config <path>` | - | Path to `ahkbuild.json`. Discovered by walking up from the cwd if omitted. |
+| `--interpreter-version <v>` | `interpreter.version` | AHK version to run under. |
+| `--bitness <32\|64>` | `interpreter.bitness` | Target architecture. |
+| `--validate` | - | Load the script, but do not execute it. Runs the interpreter with [`/Validate`], so can be used to check for load-time errors. |
+
+[`/Validate`]: https://www.autohotkey.com/docs/alpha/Scripts.htm#validate
 
 ## Global Flags
 
