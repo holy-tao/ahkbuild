@@ -12,7 +12,10 @@ use ahkbuild_interpret::{AhkVersion, Bitness};
 
 mod bundle;
 mod bundle_exe;
+mod config_util;
 mod logging;
+mod package;
+mod run;
 mod scripts;
 
 use bundle::bundle_ahk;
@@ -136,6 +139,20 @@ enum BundleCommand {
     },
 }
 
+#[derive(Subcommand, Debug, Clone)]
+enum PackageCommand {
+    /// Resolve, pin, and fetch dependencies, then build the per-project link-farm
+    Restore {
+        /// Path to ahkbuild.json. If omitted, the file is discovered by walking up from cwd.
+        #[arg(long)]
+        config: Option<PathBuf>,
+
+        /// CI mode: fail if the lockfile is missing or would change, instead of updating it.
+        #[arg(long)]
+        locked: bool,
+    },
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// Run the preprocessor over a file and emit the output
@@ -155,6 +172,36 @@ enum Commands {
     Interpreter {
         #[command(subcommand)]
         command: InterpreterCommand,
+    },
+    /// Manage module dependencies (`ahkbuild.json` -> `ahkbuild.lock`)
+    Package {
+        #[command(subcommand)]
+        cmd: PackageCommand,
+    },
+    /// Run an entry script under the configured interpreter, with dependencies resolved
+    Run {
+        /// Entry script. Overrides the `entry` field in ahkbuild.json.
+        entry: Option<PathBuf>,
+
+        /// Load the script, but do not execute it.
+        #[arg(long)]
+        validate: bool,
+
+        /// Path to ahkbuild.json. If omitted, the file is discovered by walking up from cwd.
+        #[arg(long)]
+        config: Option<PathBuf>,
+
+        /// Interpreter version. Overrides `interpreter.version` in ahkbuild.json.
+        #[arg(long)]
+        interpreter_version: Option<AhkVersion>,
+
+        /// Target bitness (32 or 64). Overrides `interpreter.bitness` in ahkbuild.json.
+        #[arg(long)]
+        bitness: Option<u8>,
+
+        /// Arguments passed through to the script (everything after `--`).
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
 }
 
@@ -294,6 +341,34 @@ fn main() -> Result<()> {
                 Ok(())
             }
         },
+        Commands::Package { cmd } => match cmd {
+            PackageCommand::Restore { config, locked } => {
+                package::restore(config.as_deref(), *locked)
+            }
+        },
+        Commands::Run {
+            entry,
+            validate,
+            config,
+            interpreter_version,
+            bitness,
+            args,
+        } => {
+            let bitness_enum = match bitness {
+                Some(32) => Some(Bitness::X32),
+                Some(64) => Some(Bitness::X64),
+                Some(other) => anyhow::bail!("invalid --bitness {other}; expected 32 or 64"),
+                None => None,
+            };
+            run::run(
+                config.as_deref(),
+                entry.as_deref(),
+                validate,
+                interpreter_version.clone(),
+                bitness_enum,
+                args,
+            )
+        }
     };
 
     result

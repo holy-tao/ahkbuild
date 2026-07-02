@@ -21,7 +21,7 @@ use anyhow::{bail, Context, Result};
 /// is invalid gives the child a clean EOF instead of a poisoned handle. Stdout/stderr take the
 /// sturdier route of piping + relaying (see `run_one`).
 #[cfg(windows)]
-fn child_stdin() -> Stdio {
+pub(crate) fn child_stdin() -> Stdio {
     use std::os::windows::io::AsRawHandle;
     let h = std::io::stdin().as_raw_handle();
     if h.is_null() || h as isize == -1 {
@@ -32,7 +32,7 @@ fn child_stdin() -> Stdio {
 }
 
 #[cfg(not(windows))]
-fn child_stdin() -> Stdio {
+pub(crate) fn child_stdin() -> Stdio {
     Stdio::inherit()
 }
 
