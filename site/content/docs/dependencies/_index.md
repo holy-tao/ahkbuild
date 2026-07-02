@@ -67,6 +67,35 @@ Entries in `dependencies` are keyed by the `#Import` name. The value must descri
 An optional `subdir` on any source points at the module root inside the fetched tree when it is not the
 repository/archive root.
 
+## Aliases
+
+The manifest key is the canonical package name and doubles as the `#Import` name. Package names are
+often the repo or tarball name, which git allows but AHK does not: a key like `yaml.ahk` is not a
+valid [identifier], so it can only be imported as a quoted path (`#Import "yaml.ahk"`).
+
+Set `alias` to import the package under a clean, per-project name instead. The alias must be a valid
+AHK identifier; ahkbuild links it into the link-farm under that name so `#Import <alias>` resolves:
+
+```jsonc
+{
+  "dependencies": {
+    "yaml.ahk": {
+      "git": "git@github.com:owner/library.ahk.git",
+      "rev": "…",
+      "alias": "library"
+    }
+  }
+}
+```
+
+```ahk
+#Import library { Function }
+```
+
+The key still identifies the package in the manifest and lockfile; only the import name changes.
+
+[identifier]: https://www.autohotkey.com/docs/alpha/Concepts.htm#names
+
 ## The lockfile
 
 `ahkbuild.lock` sits beside `ahkbuild.json` and pins non-path dependencies:

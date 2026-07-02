@@ -241,8 +241,9 @@ reserved for future use).
 
 ## `dependencies`
 
-Module dependencies, keyed by the **logical import name** written in `#Import Name`. Each value
-names exactly one source. Resolved, pinned to `ahkbuild.lock`, and materialized into the
+Module dependencies, keyed by the **canonical package name**. Each value names exactly one source
+and is imported as `#Import <key>`, unless it sets an `alias` (see below) for keys that aren't valid
+AHK identifiers. Resolved, pinned to `ahkbuild.lock`, and materialized into the
 `.ahkbuild/modules/` link-farm by [`ahkbuild package restore`]({{< relref "/docs/reference/cli#ahkbuild-package" >}}).
 See [Dependencies]({{< relref "/docs/dependencies" >}}) for the full model.
 
@@ -270,6 +271,7 @@ more than one is an error.
 | Common field | Type | Description |
 | --- | --- | --- |
 | `subdir` | string | Sub-directory within the fetched tree that holds the module, when it is not the tree root. |
+| `alias` | string | Local import name, overriding the key. Use when the key (often the repo/tarball name, e.g. `library.ahk`) is not a valid AHK identifier. The alias must itself be a valid identifier. |
 
 `sha256` is rejected on non-tarball sources; `tag`/`branch`/`rev` are rejected on `tarball`/`path`;
 `git` accepts at most one selector.
