@@ -20,6 +20,7 @@ may come from the config or from `--input`:
 
 ```json
 {
+  "$schema": "https://holy-tao.github.io/ahkbuild/schema/ahkbuild.schema.json",
   "entry": "src/main.ahk",
   "interpreter": { "version": "2.1-alpha.27" }
 }
@@ -29,6 +30,7 @@ may come from the config or from `--input`:
 
 ```json
 {
+  "$schema": "https://holy-tao.github.io/ahkbuild/schema/ahkbuild.schema.json",
   "entry": "src/main.ahk",
   "interpreter": {
     "version": "2.1-alpha.27",
