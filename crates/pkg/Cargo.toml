@@ -1,5 +1,5 @@
 [package]
-name = "ahkbuild-config"
+name = "ahkbuild-pkg"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,12 +7,20 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+ahkbuild-config.workspace = true
 ahkbuild-interpret.workspace = true
 anyhow.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tracing.workspace = true
+ureq = { version = "2", features = ["json"] }
+zip = "2"
+tar = "0.4"
+flate2 = "1"
+sha2 = "0.10"
+
+[target.'cfg(windows)'.dependencies]
+junction = "1"
 
 [dev-dependencies]
 tempfile = "3"
-jsonschema = "0.26"

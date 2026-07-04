@@ -1,0 +1,265 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://holy-tao.github.io/ahkbuild/schema/ahkbuild.schema.json",
+  "title": "ahkbuild.json",
+  "description": "Project configuration for ahkbuild, the module-aware build system for AutoHotkey v2.1+.",
+  "type": "object",
+  "required": ["interpreter"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "URL of this schema; lets editors validate the file without extra configuration."
+    },
+    "entry": {
+      "type": "string",
+      "description": "Path to the script that is the root of the #Import graph. Optional in the file, but must be supplied here or via --input. Resolves against the config file's directory."
+    },
+    "interpreter": {
+      "type": "object",
+      "description": "Which AHK interpreter to build against. Required.",
+      "required": ["version"],
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "type": "string",
+          "description": "AHK version, e.g. \"2.1-alpha.27\" or \"2.0.26\". Must match an AutoHotkey download or GitHub release tag exactly; auto-installed if missing.",
+          "pattern": "^[0-9]+\\.[0-9]+(\\.[0-9]+)?(-alpha\\.[0-9]+)?$"
+        },
+        "bitness": {
+          "description": "Target architecture. Also folds A_PtrSize.",
+          "enum": [32, 64],
+          "default": 64
+        }
+      }
+    },
+    "exe": {
+      "type": "object",
+      "description": "Output executable metadata and manifest overrides (exe target only). Every field is optional.",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "InternalName / OriginalFilename; also the default output filename (<name>.exe)."
+        },
+        "version": {
+          "type": "string",
+          "description": "Four-part W.X.Y.Z version (FileVersion / ProductVersion). Defaults to \"0.0.0.0\"."
+        },
+        "description": { "type": "string", "description": "FileDescription." },
+        "copyright": { "type": "string", "description": "LegalCopyright." },
+        "company": { "type": "string", "description": "CompanyName." },
+        "trademarks": { "type": "string", "description": "LegalTrademarks." },
+        "comments": { "type": "string", "description": "Comments." },
+        "icon": {
+          "type": "string",
+          "description": "Path to a .ico replacing the primary application icon."
+        },
+        "subsystem": {
+          "description": "PE subsystem for the final executable. \"console\" allocates a console for stdin/stdout.",
+          "enum": ["gui", "console"],
+          "default": "gui"
+        },
+        "manifest": {
+          "type": "object",
+          "description": "Application-manifest overrides merged into the interpreter's manifest. Any omitted field keeps the interpreter's default.",
+          "additionalProperties": false,
+          "properties": {
+            "uac": {
+              "description": "UAC requested execution level (<requestedExecutionLevel level>).",
+              "enum": ["asInvoker", "highestAvailable", "requireAdministrator"]
+            },
+            "dpiAware": { "type": "boolean", "description": "Legacy DPI-awareness flag (<dpiAware>)." },
+            "dpiAwareness": {
+              "type": "string",
+              "description": "Modern DPI mode, e.g. \"PerMonitorV2\" or \"system\" (<dpiAwareness>)."
+            },
+            "longPathAware": {
+              "type": "boolean",
+              "description": "Opt into paths longer than MAX_PATH (<longPathAware>)."
+            },
+            "gdiScaling": {
+              "type": "boolean",
+              "description": "GDI bitmap scaling under DPI virtualization (<gdiScaling>)."
+            }
+          }
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "description": "Extra icons and embedded resources (exe target only).",
+      "additionalProperties": false,
+      "properties": {
+        "icons": {
+          "type": "array",
+          "description": "Additional application icons, each filed as a new RT_GROUP_ICON under an explicit resource id.",
+          "items": {
+            "type": "object",
+            "required": ["path", "id"],
+            "additionalProperties": false,
+            "properties": {
+              "path": { "type": "string", "description": "The .ico file." },
+              "id": {
+                "type": "integer",
+                "description": "RT_GROUP_ICON resource id (u16). Must not collide with a built-in interpreter icon group or another configured icon.",
+                "minimum": 0,
+                "maximum": 65535
+              }
+            }
+          }
+        },
+        "extra": {
+          "type": "array",
+          "description": "Arbitrary resources embedded by name, type, and path. Read back at runtime with FindResource / LoadResource.",
+          "items": {
+            "type": "object",
+            "required": ["name", "type", "path"],
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Resource name. \"#N\" is an integer id; anything else is a string name."
+              },
+              "type": {
+                "description": "A standard RT_* constant (RT_ prefix optional, case-insensitive) or a raw integer resource type. Icon types are rejected here - use resources.icons.",
+                "oneOf": [
+                  { "type": "string" },
+                  { "type": "integer", "minimum": 0, "maximum": 65535 }
+                ]
+              },
+              "path": { "type": "string", "description": "The file whose bytes are embedded verbatim." }
+            }
+          }
+        }
+      }
+    },
+    "scripts": {
+      "type": "object",
+      "description": "Out-of-process commands run before and after bundling.",
+      "additionalProperties": false,
+      "properties": {
+        "pre-bundle": {
+          "type": "array",
+          "description": "Commands run before emit, in order.",
+          "items": { "$ref": "#/definitions/buildScript" }
+        },
+        "post-bundle": {
+          "type": "array",
+          "description": "Commands run on the finished exe, in order.",
+          "items": { "$ref": "#/definitions/buildScript" }
+        }
+      }
+    },
+    "defines": {
+      "type": "object",
+      "description": "Build variables exposed to build scripts (as environment variables and ${NAME} tokens). Flattened to strings.",
+      "propertyNames": {
+        "description": "Must match [A-Za-z_][A-Za-z0-9_]* and must not start with the reserved AHKBUILD_ prefix.",
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+        "not": { "pattern": "^AHKBUILD_" }
+      },
+      "additionalProperties": {
+        "type": ["string", "number", "boolean"]
+      }
+    },
+    "dependencies": {
+      "type": "object",
+      "description": "Module dependencies, keyed by the canonical package name. Each value names exactly one source and is imported as #Import <key> unless it sets an alias.",
+      "additionalProperties": { "$ref": "#/definitions/dependency" }
+    }
+  },
+  "definitions": {
+    "buildScript": {
+      "description": "A pre/post-bundle command. Three shapes: a bare executable string, an explicit argv array, or an object with a command argv. Must have at least one token.",
+      "oneOf": [
+        { "type": "string", "minLength": 1 },
+        { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        {
+          "type": "object",
+          "required": ["command"],
+          "properties": {
+            "command": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+          }
+        }
+      ]
+    },
+    "alias": {
+      "type": "string",
+      "description": "Local import name overriding the key. Must be a valid AHK identifier (this schema checks the ASCII subset; non-ASCII identifiers are also accepted by ahkbuild).",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+    },
+    "subdir": {
+      "type": "string",
+      "description": "Sub-directory within the fetched tree that holds the module, when it is not the tree root."
+    },
+    "dependency": {
+      "type": "object",
+      "description": "A single module dependency. Exactly one source key (git / gist / tarball / release / path).",
+      "oneOf": [
+        {
+          "title": "git",
+          "required": ["git"],
+          "additionalProperties": false,
+          "properties": {
+            "git": { "type": "string", "description": "A .git clone URL for any forge." },
+            "tag": { "type": "string", "description": "Pin to a tag." },
+            "branch": { "type": "string", "description": "Track a branch (pinned to a commit in the lock)." },
+            "rev": { "type": "string", "description": "Pin to a commit SHA." },
+            "subdir": { "$ref": "#/definitions/subdir" },
+            "alias": { "$ref": "#/definitions/alias" }
+          }
+        },
+        {
+          "title": "gist",
+          "required": ["gist"],
+          "additionalProperties": false,
+          "properties": {
+            "gist": { "type": "string", "description": "A gist id (gists are git repos)." },
+            "rev": { "type": "string", "description": "Pin to a commit; latest HEAD otherwise." },
+            "subdir": { "$ref": "#/definitions/subdir" },
+            "alias": { "$ref": "#/definitions/alias" }
+          }
+        },
+        {
+          "title": "tarball",
+          "required": ["tarball", "sha256"],
+          "additionalProperties": false,
+          "properties": {
+            "tarball": { "type": "string", "description": "A .zip or .tar.gz URL." },
+            "sha256": { "type": "string", "description": "SHA-256 of the archive bytes, verified on download." },
+            "subdir": { "$ref": "#/definitions/subdir" },
+            "alias": { "$ref": "#/definitions/alias" }
+          }
+        },
+        {
+          "title": "release",
+          "required": ["release", "tag", "asset", "sha256"],
+          "additionalProperties": false,
+          "properties": {
+            "release": { "type": "string", "description": "owner/repo of a GitHub release, e.g. \"holy-tao/YAML\"." },
+            "tag": { "type": "string", "description": "The release tag, e.g. \"v0.5.0\"." },
+            "asset": {
+              "type": "string",
+              "description": "The asset file name within the release. Must be a bare file name (no path separator).",
+              "pattern": "^[^/\\\\]+$"
+            },
+            "sha256": { "type": "string", "description": "SHA-256 of the downloaded bytes, verified on download." },
+            "subdir": { "$ref": "#/definitions/subdir" },
+            "alias": { "$ref": "#/definitions/alias" }
+          }
+        },
+        {
+          "title": "path",
+          "required": ["path"],
+          "additionalProperties": false,
+          "properties": {
+            "path": { "type": "string", "description": "A local directory (relative to the project root). Excluded from the lockfile." },
+            "subdir": { "$ref": "#/definitions/subdir" },
+            "alias": { "$ref": "#/definitions/alias" }
+          }
+        }
+      ]
+    }
+  }
+}

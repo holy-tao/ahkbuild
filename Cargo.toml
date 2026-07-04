@@ -13,6 +13,7 @@ members = [
     "crates/cli",
     "crates/interpret",
     "crates/config",
+    "crates/pkg",
 ]
 exclude = ["vendor/tree-sitter-autohotkey"]
 
@@ -30,7 +31,9 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 semver = "1.0.28"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `preserve_order` keeps object key order on a `Value` round-trip, so editing `ahkbuild.json`
+# (`package add`/`remove`) never reshuffles the user's file.
+serde_json = { version = "1", features = ["preserve_order"] }
 editpe = "0.2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "ansi"] }
@@ -47,3 +50,4 @@ ahkbuild-emit-exe = { path = "crates/emit_exe" }
 ahkbuild-pipeline = { path = "crates/pipeline" }
 ahkbuild-interpret = { path = "crates/interpret" }
 ahkbuild-config = { path = "crates/config" }
+ahkbuild-pkg = { path = "crates/pkg" }

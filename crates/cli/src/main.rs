@@ -12,7 +12,10 @@ use ahkbuild_interpret::{AhkVersion, Bitness};
 
 mod bundle;
 mod bundle_exe;
+mod config_util;
 mod logging;
+mod package;
+mod run;
 mod scripts;
 
 use bundle::bundle_ahk;
@@ -136,6 +139,118 @@ enum BundleCommand {
     },
 }
 
+#[derive(Subcommand, Debug, Clone)]
+enum PackageCommand {
+    /// Resolve, pin, and fetch dependencies, then build the per-project link-farm
+    Restore {
+        /// Path to ahkbuild.json. If omitted, the file is discovered by walking up from cwd.
+        #[arg(long)]
+        config: Option<PathBuf>,
+
+        /// CI mode: fail if the lockfile is missing or would change, instead of updating it.
+        #[arg(long)]
+        locked: bool,
+    },
+    /// List declared dependencies with their pinned revision and fetch/link status
+    List {
+        /// List packages in the global store instead of this project's dependencies. Ignores `--config`.
+        #[arg(long)]
+        global: bool,
+
+        /// Path to ahkbuild.json. If omitted, the file is discovered by walking up from cwd.
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
+    /// Re-resolve floating (git/gist) dependencies to their latest revision and update the lock
+    Update {
+        /// Dependencies to update. If omitted, every updatable dependency is refreshed.
+        names: Vec<String>,
+
+        /// Path to ahkbuild.json. If omitted, the file is discovered by walking up from cwd.
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
+    /// Remove unreferenced global packages
+    Prune {
+        /// Report what would be removed without deleting anything.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Also remove store directories not in the index.
+        #[arg(long)]
+        include_untracked: bool,
+    },
+    /// Add a dependency to ahkbuild.json (does not fetch; run `restore` afterwards)
+    Add(Box<AddArgs>),
+    /// Remove dependencies from ahkbuild.json, the lock, and the farm
+    Remove {
+        /// Dependency names to remove.
+        #[arg(required = true)]
+        names: Vec<String>,
+
+        /// Path to ahkbuild.json. If omitted, the file is discovered by walking up from cwd.
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
+    /// Verify, offline, that stored dependencies still match the lock checksums
+    Verify {
+        /// Path to ahkbuild.json. If omitted, the file is discovered by walking up from cwd.
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
+}
+
+/// Flags for `package add`. Exactly one source (`--git`/`--gist`/`--tarball`/`--release`/`--path`)
+/// must be set; the manifest deserializer enforces the per-source rules, so bad combinations are
+/// rejected with the same messages `ahkbuild.json` parsing would give.
+#[derive(clap::Args, Debug, Clone)]
+struct AddArgs {
+    /// Package name - the `#Import` name, unless `--alias` is given.
+    name: String,
+
+    /// Git repository URL.
+    #[arg(long)]
+    git: Option<String>,
+    /// Gist id.
+    #[arg(long)]
+    gist: Option<String>,
+    /// Tarball (`.zip`/`.tar.gz`) URL. Requires `--sha256`.
+    #[arg(long)]
+    tarball: Option<String>,
+    /// GitHub release `owner/repo`. Requires `--tag`, `--asset`, `--sha256`.
+    #[arg(long)]
+    release: Option<String>,
+    /// Local directory path.
+    #[arg(long)]
+    path: Option<String>,
+
+    /// Git/release tag selector.
+    #[arg(long)]
+    tag: Option<String>,
+    /// Git branch selector.
+    #[arg(long)]
+    branch: Option<String>,
+    /// Git/gist commit selector.
+    #[arg(long)]
+    rev: Option<String>,
+    /// Release asset file name.
+    #[arg(long)]
+    asset: Option<String>,
+    /// Content hash for a tarball or release asset.
+    #[arg(long)]
+    sha256: Option<String>,
+    /// Sub-directory within the fetched tree that holds the module.
+    #[arg(long)]
+    subdir: Option<String>,
+    /// Import name to expose the dependency under (for keys that aren't valid AHK identifiers).
+    #[arg(long)]
+    alias: Option<String>,
+
+    /// Path to ahkbuild.json. If omitted, the file is discovered by walking up from cwd.
+    #[arg(long)]
+    config: Option<PathBuf>,
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// Run the preprocessor over a file and emit the output
@@ -155,6 +270,36 @@ enum Commands {
     Interpreter {
         #[command(subcommand)]
         command: InterpreterCommand,
+    },
+    /// Manage module dependencies (`ahkbuild.json` -> `ahkbuild.lock`)
+    Package {
+        #[command(subcommand)]
+        cmd: PackageCommand,
+    },
+    /// Run an entry script under the configured interpreter, with dependencies resolved
+    Run {
+        /// Entry script. Overrides the `entry` field in ahkbuild.json.
+        entry: Option<PathBuf>,
+
+        /// Load the script, but do not execute it.
+        #[arg(long)]
+        validate: bool,
+
+        /// Path to ahkbuild.json. If omitted, the file is discovered by walking up from cwd.
+        #[arg(long)]
+        config: Option<PathBuf>,
+
+        /// Interpreter version. Overrides `interpreter.version` in ahkbuild.json.
+        #[arg(long)]
+        interpreter_version: Option<AhkVersion>,
+
+        /// Target bitness (32 or 64). Overrides `interpreter.bitness` in ahkbuild.json.
+        #[arg(long)]
+        bitness: Option<u8>,
+
+        /// Arguments passed through to the script (everything after `--`).
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
 }
 
@@ -294,6 +439,66 @@ fn main() -> Result<()> {
                 Ok(())
             }
         },
+        Commands::Package { cmd } => match cmd {
+            PackageCommand::Restore { config, locked } => {
+                package::restore(config.as_deref(), *locked)
+            }
+            PackageCommand::List { global, config } => {
+                if *global {
+                    package::list_global()
+                } else {
+                    package::list(config.as_deref())
+                }
+            }
+            PackageCommand::Update { names, config } => package::update(config.as_deref(), names),
+            PackageCommand::Prune {
+                dry_run,
+                include_untracked,
+            } => package::prune(*dry_run, *include_untracked),
+            PackageCommand::Add(args) => package::add(
+                args.config.as_deref(),
+                &args.name,
+                package::AddSpec {
+                    git: args.git.clone(),
+                    gist: args.gist.clone(),
+                    tarball: args.tarball.clone(),
+                    release: args.release.clone(),
+                    path: args.path.clone(),
+                    tag: args.tag.clone(),
+                    branch: args.branch.clone(),
+                    rev: args.rev.clone(),
+                    asset: args.asset.clone(),
+                    sha256: args.sha256.clone(),
+                    subdir: args.subdir.clone(),
+                    alias: args.alias.clone(),
+                },
+            ),
+            PackageCommand::Remove { names, config } => package::remove(config.as_deref(), names),
+            PackageCommand::Verify { config } => package::verify(config.as_deref()),
+        },
+        Commands::Run {
+            entry,
+            validate,
+            config,
+            interpreter_version,
+            bitness,
+            args,
+        } => {
+            let bitness_enum = match bitness {
+                Some(32) => Some(Bitness::X32),
+                Some(64) => Some(Bitness::X64),
+                Some(other) => anyhow::bail!("invalid --bitness {other}; expected 32 or 64"),
+                None => None,
+            };
+            run::run(
+                config.as_deref(),
+                entry.as_deref(),
+                validate,
+                interpreter_version.clone(),
+                bitness_enum,
+                args,
+            )
+        }
     };
 
     result

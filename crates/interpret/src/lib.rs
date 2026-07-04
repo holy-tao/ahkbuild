@@ -36,15 +36,21 @@ pub struct CachedEntry {
     pub dir: PathBuf,
 }
 
-fn home_dir() -> Result<PathBuf> {
+/// The user's home directory (`%USERPROFILE%`, falling back to `$HOME`).
+pub fn home_dir() -> Result<PathBuf> {
     std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .map(PathBuf::from)
         .ok_or_else(|| anyhow::anyhow!("cannot locate home directory"))
 }
 
+/// The ahkbuild cache root, `~/.ahkbuild/`. Shared by the interpreter cache and the package store.
+pub fn ahkbuild_root() -> Result<PathBuf> {
+    Ok(home_dir()?.join(".ahkbuild"))
+}
+
 fn interpreters_root() -> Result<PathBuf> {
-    Ok(home_dir()?.join(".ahkbuild").join("interpreters"))
+    Ok(ahkbuild_root()?.join("interpreters"))
 }
 
 fn cache_dir(version: &AhkVersion) -> Result<PathBuf> {
