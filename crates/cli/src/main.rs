@@ -151,6 +151,12 @@ enum PackageCommand {
         #[arg(long)]
         locked: bool,
     },
+    /// List declared dependencies with their pinned revision and fetch/link status
+    List {
+        /// Path to ahkbuild.json. If omitted, the file is discovered by walking up from cwd.
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -345,6 +351,7 @@ fn main() -> Result<()> {
             PackageCommand::Restore { config, locked } => {
                 package::restore(config.as_deref(), *locked)
             }
+            PackageCommand::List { config } => package::list(config.as_deref()),
         },
         Commands::Run {
             entry,

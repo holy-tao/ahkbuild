@@ -9,6 +9,7 @@
 
 mod farm;
 mod fetch;
+mod list;
 mod lock;
 mod source;
 mod store;
@@ -19,6 +20,7 @@ use ahkbuild_config::{BuildConfig, DependencySource};
 use anyhow::{bail, Result};
 
 pub use farm::{ahkbuild_dir, modules_dir};
+pub use list::{list, PackageStatus};
 pub use lock::{Lockfile, LOCKFILE_NAME, LOCK_VERSION};
 
 use lock::LockEntry;
