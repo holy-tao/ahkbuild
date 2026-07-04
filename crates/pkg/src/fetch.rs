@@ -94,6 +94,8 @@ fn clone_at_selector(url: &str, selector: &GitSelector) -> Result<Fetched> {
         .trim()
         .to_string();
 
+    tracing::info!(%sha, "Cloned repository {url} at ");
+
     // Drop VCS metadata so the tree hashes identically to a tarball of the same content.
     std::fs::remove_dir_all(dir.join(".git")).ok();
 
@@ -149,6 +151,7 @@ fn download_verified(url: &str, sha256: &str, what: &str) -> Result<Vec<u8>> {
         .set("User-Agent", "ahkbuild")
         .call()
         .with_context(|| format!("GET {url}"))?;
+    tracing::trace!("{:?}", resp); // TODO log headers too
     let mut bytes = Vec::new();
     std::io::Read::read_to_end(&mut resp.into_reader(), &mut bytes)
         .with_context(|| format!("reading {what} body"))?;

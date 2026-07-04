@@ -42,6 +42,8 @@ pub fn fresh_temp() -> Result<PathBuf> {
 pub fn hash_tree(dir: &Path) -> Result<String> {
     let mut rels = Vec::new();
     collect_files(dir, PathBuf::new(), &mut rels)?;
+    tracing::trace!("Hashing {} files in {}", rels.len(), dir.display());
+
     rels.sort();
 
     let mut hasher = Sha256::new();
@@ -78,6 +80,7 @@ fn collect_files(base: &Path, rel: PathBuf, out: &mut Vec<PathBuf>) -> Result<()
 /// Move a staged tree into the store under `content_hash`. Idempotent: if the entry already exists,
 /// the staged copy is discarded. Returns the final store path.
 pub fn populate(content_hash: &str, staged: &Path) -> Result<PathBuf> {
+    tracing::trace!("Moving staged tree at {} to store", staged.display());
     let dest = store_path(content_hash)?;
     if dest.exists() {
         std::fs::remove_dir_all(staged).ok();
