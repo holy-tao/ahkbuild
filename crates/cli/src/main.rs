@@ -153,6 +153,10 @@ enum PackageCommand {
     },
     /// List declared dependencies with their pinned revision and fetch/link status
     List {
+        /// List packages in the global store instead of this project's dependencies. Ignores `--config`.
+        #[arg(long)]
+        global: bool,
+
         /// Path to ahkbuild.json. If omitted, the file is discovered by walking up from cwd.
         #[arg(long)]
         config: Option<PathBuf>,
@@ -165,6 +169,16 @@ enum PackageCommand {
         /// Path to ahkbuild.json. If omitted, the file is discovered by walking up from cwd.
         #[arg(long)]
         config: Option<PathBuf>,
+    },
+    /// Remove unreferenced global packages
+    Prune {
+        /// Report what would be removed without deleting anything.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Also remove store directories not in the index.
+        #[arg(long)]
+        include_untracked: bool,
     },
 }
 
@@ -360,8 +374,18 @@ fn main() -> Result<()> {
             PackageCommand::Restore { config, locked } => {
                 package::restore(config.as_deref(), *locked)
             }
-            PackageCommand::List { config } => package::list(config.as_deref()),
+            PackageCommand::List { global, config } => {
+                if *global {
+                    package::list_global()
+                } else {
+                    package::list(config.as_deref())
+                }
+            }
             PackageCommand::Update { names, config } => package::update(config.as_deref(), names),
+            PackageCommand::Prune {
+                dry_run,
+                include_untracked,
+            } => package::prune(*dry_run, *include_untracked),
         },
         Commands::Run {
             entry,

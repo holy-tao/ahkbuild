@@ -9,6 +9,7 @@
 
 mod farm;
 mod fetch;
+mod index;
 mod list;
 mod lock;
 mod source;
@@ -21,6 +22,7 @@ use ahkbuild_config::{BuildConfig, DependencySource};
 use anyhow::{bail, Result};
 
 pub use farm::{ahkbuild_dir, modules_dir};
+pub use index::{list_store, prune, PruneReport, RemovedEntry, StorePackage};
 pub use list::{list, PackageStatus};
 pub use lock::{Lockfile, LOCKFILE_NAME, LOCK_VERSION};
 
@@ -235,6 +237,13 @@ fn drive(
     }
 
     report.restored = farm::materialize(project_root, config, &new_lock)?;
+
+    // Record this project and its store entries in the global index for `list --global` / `prune`.
+    // Best-effort: the restore has already succeeded, so an index write failure only warns.
+    if let Err(e) = index::record(project_root, &new_lock) {
+        tracing::warn!(error = %e, "failed to update the store index");
+    }
+
     Ok(Driven {
         old,
         new: new_lock,

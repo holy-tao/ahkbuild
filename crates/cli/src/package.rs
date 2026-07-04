@@ -1,9 +1,10 @@
-//! `ahkbuild package restore`: resolve and pin dependencies, populate the store, and build the
-//! per-project link-farm.
+//! The `ahkbuild package` subcommands: restore, list (project + global store), update, and prune.
 
 use std::path::Path;
 
-use ahkbuild_pkg::{PackageStatus, RestoreOptions, RestoreReport, UpdateReport};
+use ahkbuild_pkg::{
+    PackageStatus, PruneReport, RestoreOptions, RestoreReport, StorePackage, UpdateReport,
+};
 use anyhow::Result;
 
 pub(crate) fn restore(config_path: Option<&Path>, locked: bool) -> Result<()> {
@@ -120,5 +121,102 @@ fn short_rev(rev: &str) -> String {
         rev[..12].to_string()
     } else {
         rev.to_string()
+    }
+}
+
+pub(crate) fn list_global() -> Result<()> {
+    let packages = ahkbuild_pkg::list_store()?;
+    if packages.is_empty() {
+        println!("The package store is empty.");
+        return Ok(());
+    }
+
+    let total: u64 = packages.iter().map(|p| p.size).sum();
+    let noun = if packages.len() == 1 {
+        "entry"
+    } else {
+        "entries"
+    };
+    println!("{} store {noun} ({}):", packages.len(), human_size(total));
+    for p in &packages {
+        println!();
+        print_store_package(p);
+    }
+    Ok(())
+}
+
+fn print_store_package(p: &StorePackage) {
+    let title = if p.names.is_empty() {
+        "(untracked)".to_string()
+    } else {
+        p.names.join(", ")
+    };
+    let orphan = if p.refs == 0 { "  [orphan]" } else { "" };
+    println!(
+        "  {title}  {}  ({}){orphan}",
+        &p.hash[..12],
+        human_size(p.size)
+    );
+    if let Some(src) = &p.source {
+        println!("    source:  {src}");
+    }
+    if let Some(rev) = &p.resolved {
+        println!("    rev:     {}", short_rev(rev));
+    }
+    let projects = if p.refs == 1 { "project" } else { "projects" };
+    println!("    used by: {} {projects}", p.refs);
+}
+
+pub(crate) fn prune(dry_run: bool, include_untracked: bool) -> Result<()> {
+    // Register the project we are standing in (if any) so its live entries are never pruned, even
+    // when it has not been restored since the index was introduced.
+    let current = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| ahkbuild_config::find_config(&cwd).ok().flatten())
+        .and_then(|cfg| cfg.parent().map(Path::to_path_buf));
+
+    let report = ahkbuild_pkg::prune(current.as_deref(), dry_run, include_untracked)?;
+    report_prune(&report);
+    Ok(())
+}
+
+fn report_prune(report: &PruneReport) {
+    for e in &report.removed {
+        let title = if e.names.is_empty() {
+            "(untracked)".to_string()
+        } else {
+            e.names.join(", ")
+        };
+        println!("  {title}  {}  ({})", &e.hash[..12], human_size(e.size));
+    }
+
+    let n = report.removed.len();
+    if n == 0 {
+        println!("Nothing to prune; the store holds no unreferenced packages.");
+    } else if report.dry_run {
+        let noun = if n == 1 { "entry" } else { "entries" };
+        println!(
+            "Would remove {n} {noun}, freeing {}. Re-run without --dry-run to apply.",
+            human_size(report.freed)
+        );
+    } else {
+        let noun = if n == 1 { "entry" } else { "entries" };
+        println!("Removed {n} {noun}, freed {}.", human_size(report.freed));
+    }
+}
+
+/// Format a byte count as a compact human-readable size (e.g. `4.2 MB`).
+fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut size = bytes as f64;
+    let mut unit = 0;
+    while size >= 1024.0 && unit < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{size:.1} {}", UNITS[unit])
     }
 }
