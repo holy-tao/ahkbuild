@@ -28,6 +28,116 @@ pub use lock::{Lockfile, LOCKFILE_NAME, LOCK_VERSION};
 
 use lock::LockEntry;
 
+/// A dependency that failed [`verify`], with a human-readable reason.
+#[derive(Debug, Clone)]
+pub struct VerifyIssue {
+    pub name: String,
+    pub problem: String,
+}
+
+/// What a [`verify`] found.
+#[derive(Debug, Clone, Default)]
+pub struct VerifyReport {
+    /// Dependencies whose store contents matched the lock (plus `path` deps that exist on disk).
+    pub verified: usize,
+    /// Dependencies that are missing, unpinned, or whose store contents drifted from the lock.
+    pub issues: Vec<VerifyIssue>,
+}
+
+impl VerifyReport {
+    /// Whether every dependency checked out.
+    pub fn ok(&self) -> bool {
+        self.issues.is_empty()
+    }
+}
+
+/// Check, offline, that every dependency is pinned and its store contents still hash to the lock's
+/// checksum. Never fetches - use `restore` to repair anything this flags. `path` deps only need to
+/// exist on disk.
+pub fn verify(config: &BuildConfig, project_root: &Path) -> Result<VerifyReport> {
+    let lock = Lockfile::load(project_root)?.unwrap_or_default();
+    let mut report = VerifyReport::default();
+
+    for (name, spec) in &config.dependencies {
+        let issue = |problem: String| VerifyIssue {
+            name: name.clone(),
+            problem,
+        };
+        match &spec.source {
+            DependencySource::Path { path } => {
+                if path.exists() {
+                    report.verified += 1;
+                } else {
+                    report.issues.push(issue(format!(
+                        "path source {} does not exist",
+                        path.display()
+                    )));
+                }
+            }
+            src => {
+                let sid = source::source_id(src);
+                let entry = match lock.get(name) {
+                    Some(e) if e.source == sid => e,
+                    Some(_) => {
+                        report.issues.push(issue(
+                            "lockfile is out of date (manifest source changed); run \
+                             `ahkbuild package restore`"
+                                .into(),
+                        ));
+                        continue;
+                    }
+                    None => {
+                        report.issues.push(issue(
+                            "not present in the lockfile; run `ahkbuild package restore`".into(),
+                        ));
+                        continue;
+                    }
+                };
+                let hash = entry.content_hash()?;
+                let dir = store::store_path(hash)?;
+                if !dir.exists() {
+                    report.issues.push(issue(
+                        "missing from the store; run `ahkbuild package restore`".into(),
+                    ));
+                    continue;
+                }
+                let got = store::hash_tree(&dir)?;
+                if got != hash {
+                    report.issues.push(issue(format!(
+                        "store contents do not match the lock checksum\n    expected sha256:{hash}\n    \
+                         got      sha256:{got}"
+                    )));
+                    continue;
+                }
+                report.verified += 1;
+            }
+        }
+    }
+    Ok(report)
+}
+
+/// Forget removed dependencies: drop their lockfile entries and unlink them from the farm. `deps` is
+/// `(manifest name, import name)` pairs, captured before the manifest edit. Used by `package remove`.
+pub fn forget(project_root: &Path, deps: &[(String, String)]) -> Result<()> {
+    if let Some(mut lock) = Lockfile::load(project_root)? {
+        let names: BTreeSet<&str> = deps.iter().map(|(n, _)| n.as_str()).collect();
+        let before = lock.packages.len();
+        lock.packages.retain(|e| !names.contains(e.name.as_str()));
+        if lock.packages.len() != before {
+            if lock.packages.is_empty() {
+                // Preserve the invariant that a project with nothing pinned has no lockfile.
+                std::fs::remove_file(project_root.join(LOCKFILE_NAME)).ok();
+            } else {
+                lock.normalized().save(project_root)?;
+            }
+        }
+    }
+    for (_, import_name) in deps {
+        farm::unlink(project_root, import_name)?;
+    }
+    Ok(())
+}
+
 /// Options controlling a [`restore`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RestoreOptions {

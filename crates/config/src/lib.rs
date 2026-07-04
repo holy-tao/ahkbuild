@@ -7,9 +7,11 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
 mod dependencies;
+mod manifest;
 
 pub use ahkbuild_interpret::{AhkVersion, Bitness};
 pub use dependencies::{DependencySource, DependencySpec, GitSelector};
+pub use manifest::{add_dependency, remove_dependency};
 
 #[derive(Debug, Deserialize)]
 pub struct BuildConfig {

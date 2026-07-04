@@ -89,6 +89,30 @@ pub fn materialize(project_root: &Path, config: &BuildConfig, lock: &Lockfile) -
     Ok(count)
 }
 
+/// Remove any farm link for `import_name` (the directory form, or the `<import_name>.ahk` single-file
+/// release form). Used by `package remove`; leaves the rest of the farm intact.
+pub fn unlink(project_root: &Path, import_name: &str) -> Result<()> {
+    let modules = modules_dir(project_root);
+    for candidate in [
+        modules.join(import_name),
+        modules.join(format!("{import_name}.ahk")),
+    ] {
+        let Ok(md) = std::fs::symlink_metadata(&candidate) else {
+            continue;
+        };
+        if md.file_type().is_symlink() {
+            remove_link(&candidate)?;
+        } else if md.is_dir() {
+            std::fs::remove_dir_all(&candidate)
+                .with_context(|| format!("removing {}", candidate.display()))?;
+        } else {
+            std::fs::remove_file(&candidate)
+                .with_context(|| format!("removing {}", candidate.display()))?;
+        }
+    }
+    Ok(())
+}
+
 fn write_gitignore(ahkbuild_dir: &Path) -> Result<()> {
     // A `*` inside the generated dir ignores everything within it (including itself), so the store
     // links and gitignore never land in the user's repo.

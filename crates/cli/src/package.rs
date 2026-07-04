@@ -1,11 +1,30 @@
-//! The `ahkbuild package` subcommands: restore, list (project + global store), update, and prune.
+//! The `ahkbuild package` subcommands: restore, list, update, prune, add, remove, and verify.
 
 use std::path::Path;
 
 use ahkbuild_pkg::{
     PackageStatus, PruneReport, RestoreOptions, RestoreReport, StorePackage, UpdateReport,
+    VerifyReport,
 };
-use anyhow::Result;
+use anyhow::{bail, Result};
+use serde_json::{Map, Value};
+
+/// The source and option flags for `package add`, mirroring a manifest dependency's shape.
+#[derive(Default)]
+pub(crate) struct AddSpec {
+    pub git: Option<String>,
+    pub gist: Option<String>,
+    pub tarball: Option<String>,
+    pub release: Option<String>,
+    pub path: Option<String>,
+    pub tag: Option<String>,
+    pub branch: Option<String>,
+    pub rev: Option<String>,
+    pub asset: Option<String>,
+    pub sha256: Option<String>,
+    pub subdir: Option<String>,
+    pub alias: Option<String>,
+}
 
 pub(crate) fn restore(config_path: Option<&Path>, locked: bool) -> Result<()> {
     let (config, project_root) = crate::config_util::load(config_path)?;
@@ -202,6 +221,99 @@ fn report_prune(report: &PruneReport) {
     } else {
         let noun = if n == 1 { "entry" } else { "entries" };
         println!("Removed {n} {noun}, freed {}.", human_size(report.freed));
+    }
+}
+
+pub(crate) fn add(config_path: Option<&Path>, name: &str, spec: AddSpec) -> Result<()> {
+    let config_file = crate::config_util::locate(config_path)?;
+
+    // Build the source object from the set flags; the manifest deserializer (invoked inside
+    // `add_dependency`) enforces exactly-one-source and every per-source rule, so we don't re-check.
+    let mut obj = Map::new();
+    let mut put = |key: &str, val: &Option<String>| {
+        if let Some(v) = val {
+            obj.insert(key.to_string(), Value::String(v.clone()));
+        }
+    };
+    put("git", &spec.git);
+    put("gist", &spec.gist);
+    put("tarball", &spec.tarball);
+    put("release", &spec.release);
+    put("path", &spec.path);
+    put("tag", &spec.tag);
+    put("branch", &spec.branch);
+    put("rev", &spec.rev);
+    put("asset", &spec.asset);
+    put("sha256", &spec.sha256);
+    put("subdir", &spec.subdir);
+    put("alias", &spec.alias);
+
+    ahkbuild_config::add_dependency(&config_file, name, Value::Object(obj))?;
+    println!(
+        "Added {name} to {}. Run `ahkbuild package restore` to fetch it.",
+        config_file.display()
+    );
+    Ok(())
+}
+
+pub(crate) fn remove(config_path: Option<&Path>, names: &[String]) -> Result<()> {
+    let config_file = crate::config_util::locate(config_path)?;
+    let config = ahkbuild_config::load(&config_file)?;
+    let project_root = crate::config_util::project_root(&config_file);
+
+    // Capture (manifest name, import name) before editing so we can also drop the lock entry and
+    // unlink the farm. Reject unknown names up front so a typo changes nothing.
+    let mut deps = Vec::new();
+    let mut missing = Vec::new();
+    for name in names {
+        match config.dependencies.get(name) {
+            Some(spec) => deps.push((name.clone(), spec.import_name(name).to_string())),
+            None => missing.push(name.clone()),
+        }
+    }
+    if !missing.is_empty() {
+        bail!(
+            "no such dependency in ahkbuild.json: {}",
+            missing.join(", ")
+        );
+    }
+
+    for (name, _) in &deps {
+        ahkbuild_config::remove_dependency(&config_file, name)?;
+    }
+    ahkbuild_pkg::forget(&project_root, &deps)?;
+
+    let noun = if deps.len() == 1 {
+        "dependency"
+    } else {
+        "dependencies"
+    };
+    println!("Removed {} {noun}.", deps.len());
+    Ok(())
+}
+
+pub(crate) fn verify(config_path: Option<&Path>) -> Result<()> {
+    let (config, project_root) = crate::config_util::load(config_path)?;
+    let report = ahkbuild_pkg::verify(&config, &project_root)?;
+    report_verify(&report)
+}
+
+fn report_verify(report: &VerifyReport) -> Result<()> {
+    for issue in &report.issues {
+        println!("  {}: {}", issue.name, issue.problem);
+    }
+    if report.ok() {
+        let noun = if report.verified == 1 {
+            "dependency"
+        } else {
+            "dependencies"
+        };
+        println!("All {} {noun} verified.", report.verified);
+        Ok(())
+    } else {
+        let n = report.issues.len();
+        let noun = if n == 1 { "problem" } else { "problems" };
+        bail!("{n} {noun} found; run `ahkbuild package restore` to repair");
     }
 }
 

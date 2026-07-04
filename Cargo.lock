@@ -36,6 +36,7 @@ dependencies = [
  "ahkbuild-syntax",
  "anyhow",
  "clap",
+ "serde_json",
  "tracing",
  "tracing-subscriber",
 ]
@@ -48,6 +49,7 @@ dependencies = [
  "anyhow",
  "serde",
  "serde_json",
+ "tempfile",
  "tracing",
 ]
 

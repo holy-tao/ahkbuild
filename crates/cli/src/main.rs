@@ -180,6 +180,75 @@ enum PackageCommand {
         #[arg(long)]
         include_untracked: bool,
     },
+    /// Add a dependency to ahkbuild.json (does not fetch; run `restore` afterwards)
+    Add(Box<AddArgs>),
+    /// Remove dependencies from ahkbuild.json, the lock, and the farm
+    Remove {
+        /// Dependency names to remove.
+        #[arg(required = true)]
+        names: Vec<String>,
+
+        /// Path to ahkbuild.json. If omitted, the file is discovered by walking up from cwd.
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
+    /// Verify, offline, that stored dependencies still match the lock checksums
+    Verify {
+        /// Path to ahkbuild.json. If omitted, the file is discovered by walking up from cwd.
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
+}
+
+/// Flags for `package add`. Exactly one source (`--git`/`--gist`/`--tarball`/`--release`/`--path`)
+/// must be set; the manifest deserializer enforces the per-source rules, so bad combinations are
+/// rejected with the same messages `ahkbuild.json` parsing would give.
+#[derive(clap::Args, Debug, Clone)]
+struct AddArgs {
+    /// Package name - the `#Import` name, unless `--alias` is given.
+    name: String,
+
+    /// Git repository URL.
+    #[arg(long)]
+    git: Option<String>,
+    /// Gist id.
+    #[arg(long)]
+    gist: Option<String>,
+    /// Tarball (`.zip`/`.tar.gz`) URL. Requires `--sha256`.
+    #[arg(long)]
+    tarball: Option<String>,
+    /// GitHub release `owner/repo`. Requires `--tag`, `--asset`, `--sha256`.
+    #[arg(long)]
+    release: Option<String>,
+    /// Local directory path.
+    #[arg(long)]
+    path: Option<String>,
+
+    /// Git/release tag selector.
+    #[arg(long)]
+    tag: Option<String>,
+    /// Git branch selector.
+    #[arg(long)]
+    branch: Option<String>,
+    /// Git/gist commit selector.
+    #[arg(long)]
+    rev: Option<String>,
+    /// Release asset file name.
+    #[arg(long)]
+    asset: Option<String>,
+    /// Content hash for a tarball or release asset.
+    #[arg(long)]
+    sha256: Option<String>,
+    /// Sub-directory within the fetched tree that holds the module.
+    #[arg(long)]
+    subdir: Option<String>,
+    /// Import name to expose the dependency under (for keys that aren't valid AHK identifiers).
+    #[arg(long)]
+    alias: Option<String>,
+
+    /// Path to ahkbuild.json. If omitted, the file is discovered by walking up from cwd.
+    #[arg(long)]
+    config: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -386,6 +455,26 @@ fn main() -> Result<()> {
                 dry_run,
                 include_untracked,
             } => package::prune(*dry_run, *include_untracked),
+            PackageCommand::Add(args) => package::add(
+                args.config.as_deref(),
+                &args.name,
+                package::AddSpec {
+                    git: args.git.clone(),
+                    gist: args.gist.clone(),
+                    tarball: args.tarball.clone(),
+                    release: args.release.clone(),
+                    path: args.path.clone(),
+                    tag: args.tag.clone(),
+                    branch: args.branch.clone(),
+                    rev: args.rev.clone(),
+                    asset: args.asset.clone(),
+                    sha256: args.sha256.clone(),
+                    subdir: args.subdir.clone(),
+                    alias: args.alias.clone(),
+                },
+            ),
+            PackageCommand::Remove { names, config } => package::remove(config.as_deref(), names),
+            PackageCommand::Verify { config } => package::verify(config.as_deref()),
         },
         Commands::Run {
             entry,
