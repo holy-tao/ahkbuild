@@ -11,6 +11,7 @@ use ahkbuild_config::{BuildConfig, DependencySource};
 use anyhow::{Context, Result};
 
 use crate::lock::Lockfile;
+use crate::source::archive_kind;
 use crate::store::{self, store_path};
 
 /// `<project>/.ahkbuild/`.
@@ -47,6 +48,29 @@ pub fn materialize(project_root: &Path, config: &BuildConfig, lock: &Lockfile) -
                 store_path(entry.content_hash()?)?
             }
         };
+        // The farm exposes each dependency under its import name (the `alias`, or the key) so
+        // `#Import <name>` resolves here via `AhkImportPath`.
+        let import_name = spec.import_name(name);
+
+        // A single-file release asset is one `.ahk` file, not a directory tree: expose it as
+        // `modules/<import name>.ahk`, which AHK's `ModuleName.ahk` search candidate resolves.
+        if let DependencySource::GithubRelease { asset, .. } = &spec.source {
+            if archive_kind(asset).is_none() {
+                let file = base.join(asset);
+                anyhow::ensure!(
+                    file.is_file(),
+                    "dependency {name:?} asset {} does not exist",
+                    file.display()
+                );
+                let link = modules.join(format!("{import_name}.ahk"));
+                tracing::debug!(name = %import_name, target = %file.display(), "linking release asset");
+                make_file_link(&link, &file)
+                    .with_context(|| format!("linking {} -> {}", link.display(), file.display()))?;
+                count += 1;
+                continue;
+            }
+        }
+
         let target = match &spec.subdir {
             Some(sub) => base.join(sub),
             None => base,
@@ -56,9 +80,6 @@ pub fn materialize(project_root: &Path, config: &BuildConfig, lock: &Lockfile) -
             "dependency {name:?} target {} does not exist",
             target.display()
         );
-        // The farm exposes each dependency under its import name (the `alias`, or the key) so
-        // `#Import <name>` resolves here via `AhkImportPath`.
-        let import_name = spec.import_name(name);
         let link = modules.join(import_name);
         tracing::debug!(name = %import_name, target = %target.display(), "linking dependency");
         make_link(&link, &target)
@@ -136,6 +157,34 @@ fn make_link(link: &Path, target: &Path) -> Result<()> {
         Err(e) => {
             tracing::warn!(error = %e, "symlink failed; copying instead");
             store::copy_dir(target, link)
+        }
+    }
+}
+
+/// Create a file link `link` -> `target` (a single file), falling back to a copy where the platform
+/// forbids unprivileged symlinks (notably Windows without Developer Mode).
+#[cfg(windows)]
+fn make_file_link(link: &Path, target: &Path) -> Result<()> {
+    match std::os::windows::fs::symlink_file(target, link) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            tracing::warn!(error = %e, "file symlink failed; copying instead");
+            std::fs::copy(target, link)
+                .map(|_| ())
+                .with_context(|| format!("copying {} -> {}", target.display(), link.display()))
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn make_file_link(link: &Path, target: &Path) -> Result<()> {
+    match std::os::unix::fs::symlink(target, link) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            tracing::warn!(error = %e, "file symlink failed; copying instead");
+            std::fs::copy(target, link)
+                .map(|_| ())
+                .with_context(|| format!("copying {} -> {}", target.display(), link.display()))
         }
     }
 }

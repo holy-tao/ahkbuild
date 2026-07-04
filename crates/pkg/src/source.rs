@@ -24,6 +24,12 @@ pub fn source_id(src: &DependencySource) -> String {
             None => format!("gist+{id}"),
         },
         DependencySource::Tarball { url, sha256 } => format!("tarball+{url}?sha256={sha256}"),
+        DependencySource::GithubRelease {
+            repo,
+            tag,
+            asset,
+            sha256,
+        } => format!("release+{repo}@{tag}/{asset}?sha256={sha256}"),
         // `path` deps are never locked; this is only a stable placeholder.
         DependencySource::Path { .. } => "path".to_string(),
     }
@@ -32,6 +38,32 @@ pub fn source_id(src: &DependencySource) -> String {
 /// The `.git` clone URL for a gist id.
 pub fn gist_url(id: &str) -> String {
     format!("https://gist.github.com/{id}.git")
+}
+
+/// The direct download URL for a GitHub release asset.
+pub fn release_asset_url(repo: &str, tag: &str, asset: &str) -> String {
+    format!("https://github.com/{repo}/releases/download/{tag}/{asset}")
+}
+
+/// The archive format implied by a file name's extension. `None` means the file is not a recognized
+/// archive and should be treated as a single file. Shared by tarball/release fetching (to decide
+/// whether to extract) and the link-farm (to decide whether a release asset is a directory tree or
+/// a single `.ahk` module file).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArchiveKind {
+    Zip,
+    TarGz,
+}
+
+/// Classify `name` (a URL or bare file name) by its archive extension.
+pub fn archive_kind(name: &str) -> Option<ArchiveKind> {
+    if name.ends_with(".zip") {
+        Some(ArchiveKind::Zip)
+    } else if name.ends_with(".tar.gz") || name.ends_with(".tgz") {
+        Some(ArchiveKind::TarGz)
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -68,5 +100,30 @@ mod tests {
             }),
             "tarball+u?sha256=ff"
         );
+        assert_eq!(
+            source_id(&DependencySource::GithubRelease {
+                repo: "holy-tao/YAML".into(),
+                tag: "v0.5.0".into(),
+                asset: "YAML64.ahk".into(),
+                sha256: "ff".into(),
+            }),
+            "release+holy-tao/YAML@v0.5.0/YAML64.ahk?sha256=ff"
+        );
+    }
+
+    #[test]
+    fn release_asset_url_is_the_github_download_path() {
+        assert_eq!(
+            release_asset_url("holy-tao/YAML", "v0.5.0", "YAML64.ahk"),
+            "https://github.com/holy-tao/YAML/releases/download/v0.5.0/YAML64.ahk"
+        );
+    }
+
+    #[test]
+    fn archive_kind_classifies_by_extension() {
+        assert_eq!(archive_kind("x.zip"), Some(ArchiveKind::Zip));
+        assert_eq!(archive_kind("x.tar.gz"), Some(ArchiveKind::TarGz));
+        assert_eq!(archive_kind("x.tgz"), Some(ArchiveKind::TarGz));
+        assert_eq!(archive_kind("YAML64.ahk"), None);
     }
 }

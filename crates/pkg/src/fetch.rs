@@ -10,7 +10,7 @@ use std::process::Command;
 use ahkbuild_config::{DependencySource, GitSelector};
 use anyhow::{bail, Context, Result};
 
-use crate::source::gist_url;
+use crate::source::{archive_kind, gist_url, release_asset_url, ArchiveKind};
 use crate::store::fresh_temp;
 
 /// A staged fetch: the tree lives in `dir`, pinned to the immutable `resolved` id.
@@ -32,13 +32,19 @@ pub fn fetch_fresh(src: &DependencySource) -> Result<Fetched> {
             }
         }
         DependencySource::Tarball { url, sha256 } => fetch_tarball(url, sha256),
+        DependencySource::GithubRelease {
+            repo,
+            tag,
+            asset,
+            sha256,
+        } => fetch_release(repo, tag, asset, sha256),
         DependencySource::Path { .. } => bail!("path dependencies are not fetched"),
     }
 }
 
 /// Re-stage a source at an already-pinned `resolved` id (repopulating a missing store entry from
-/// the lockfile). For git/gist this checks out the exact commit SHA; for a tarball it re-downloads
-/// and re-verifies.
+/// the lockfile). For git/gist this checks out the exact commit SHA; for a tarball or release asset
+/// it re-downloads and re-verifies (the URL is immutable, so `resolved` is not needed).
 pub fn fetch_pinned(src: &DependencySource, resolved: &str) -> Result<Fetched> {
     match src {
         DependencySource::Git { url, .. } => {
@@ -49,6 +55,12 @@ pub fn fetch_pinned(src: &DependencySource, resolved: &str) -> Result<Fetched> {
             clone_at_selector(&url, &GitSelector::Rev(resolved.into()))
         }
         DependencySource::Tarball { url, sha256 } => fetch_tarball(url, sha256),
+        DependencySource::GithubRelease {
+            repo,
+            tag,
+            asset,
+            sha256,
+        } => fetch_release(repo, tag, asset, sha256),
         DependencySource::Path { .. } => bail!("path dependencies are not fetched"),
     }
 }
@@ -89,14 +101,57 @@ fn clone_at_selector(url: &str, selector: &GitSelector) -> Result<Fetched> {
 }
 
 fn fetch_tarball(url: &str, sha256: &str) -> Result<Fetched> {
-    tracing::debug!(%url, "downloading tarball");
+    let bytes = download_verified(url, sha256, "tarball")?;
+    let kind = archive_kind(url).ok_or_else(|| {
+        anyhow::anyhow!("unsupported tarball extension for {url}: expected .zip, .tar.gz, or .tgz")
+    })?;
+
+    let dir = fresh_temp()?;
+    extract_archive(kind, &bytes, &dir)?;
+
+    Ok(Fetched {
+        resolved: url.to_string(),
+        dir,
+    })
+}
+
+/// Fetch a GitHub release asset. An archive asset (.zip/.tar.gz/.tgz) is extracted like a tarball;
+/// any other asset is staged as the sole file `<asset>` in a fresh directory, which the link-farm
+/// exposes as `modules/<import name>.ahk`.
+fn fetch_release(repo: &str, tag: &str, asset: &str, sha256: &str) -> Result<Fetched> {
+    let url = release_asset_url(repo, tag, asset);
+    let bytes = download_verified(&url, sha256, "release asset")?;
+
+    let dir = fresh_temp()?;
+    match archive_kind(asset) {
+        Some(kind) => extract_archive(kind, &bytes, &dir)?,
+        None => {
+            let file = dir.join(asset);
+            std::fs::write(&file, &bytes).with_context(|| format!("writing {}", file.display()))?;
+        }
+    }
+
+    Ok(Fetched { resolved: url, dir })
+}
+
+fn extract_archive(kind: ArchiveKind, bytes: &[u8], dest: &std::path::Path) -> Result<()> {
+    match kind {
+        ArchiveKind::Zip => extract_zip(bytes, dest),
+        ArchiveKind::TarGz => extract_tar_gz(bytes, dest),
+    }
+}
+
+/// Download `url` and verify its bytes hash to `sha256` (case-insensitive hex). `what` names the
+/// kind of download for error messages.
+fn download_verified(url: &str, sha256: &str, what: &str) -> Result<Vec<u8>> {
+    tracing::debug!(%url, "downloading {what}");
     let resp = ureq::get(url)
         .set("User-Agent", "ahkbuild")
         .call()
         .with_context(|| format!("GET {url}"))?;
     let mut bytes = Vec::new();
     std::io::Read::read_to_end(&mut resp.into_reader(), &mut bytes)
-        .context("reading tarball body")?;
+        .with_context(|| format!("reading {what} body"))?;
 
     let got = {
         use sha2::{Digest, Sha256};
@@ -108,22 +163,9 @@ fn fetch_tarball(url: &str, sha256: &str) -> Result<Fetched> {
         s
     };
     if !got.eq_ignore_ascii_case(sha256) {
-        bail!("tarball checksum mismatch for {url}\n  expected sha256: {sha256}\n  got:      sha256: {got}");
+        bail!("{what} checksum mismatch for {url}\n  expected sha256: {sha256}\n  got:      sha256: {got}");
     }
-
-    let dir = fresh_temp()?;
-    if url.ends_with(".zip") {
-        extract_zip(&bytes, &dir)?;
-    } else if url.ends_with(".tar.gz") || url.ends_with(".tgz") {
-        extract_tar_gz(&bytes, &dir)?;
-    } else {
-        bail!("unsupported tarball extension for {url}: expected .zip, .tar.gz, or .tgz");
-    }
-
-    Ok(Fetched {
-        resolved: url.to_string(),
-        dir,
-    })
+    Ok(bytes)
 }
 
 fn extract_zip(bytes: &[u8], dest: &std::path::Path) -> Result<()> {

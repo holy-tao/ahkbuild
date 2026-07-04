@@ -12,8 +12,8 @@ similar to Go's package management model. Dependencies are declared in
 Ahkbuild fetches them into a shared content-addressed store and exposes them to your script under
 clean logical names.
 
-There is *no central index*: dependencies point directly at sources (a git repo, a gist, a tarball, or a local
-path).
+There is *no central index*: dependencies point directly at sources (a git repo, a gist, a tarball, a GitHub
+release asset, or a local path).
 
 Ahkbuild stores all packages in content-addressable directories under `~/.ahkbuild/modules/` and [soft-link]s
 to them in your local repository. This system is inspired by `pnpm`'s and means that identical dependencies are
@@ -61,11 +61,13 @@ Entries in `dependencies` are keyed by the `#Import` name. The value must descri
 | --- | --- | --- |
 | `git` | `{ "git": "<.git url>", "tag"\|"branch"\|"rev": "…" }` | A shallow `git` clone of any forge. With no selector, the default branch HEAD is used. In the lockfile, these are always pinned to a commit SHA. |
 | `gist` | `{ "gist": "<id>", "rev": "…" }` | Gists are git repos; `rev` is optional (latest HEAD otherwise). |
-| `tarball` | `{ "tarball": "<url>", "sha256": "…" }` | A `.zip` or `.tar.gz`. The `sha256` of the archive bytes is required and verified. These can be used to target GitHub releases; point the url at the download link. |
+| `tarball` | `{ "tarball": "<url>", "sha256": "…" }` | A `.zip` or `.tar.gz`. The `sha256` of the archive bytes is required and verified. |
+| `release` | `{ "release": "<owner/repo>", "tag": "…", "asset": "…", "sha256": "…" }` | A GitHub release asset, downloaded from `https://github.com/<owner/repo>/releases/download/<tag>/<asset>`. An archive asset (`.zip`/`.tar.gz`/`.tgz`) is extracted like a `tarball`; any other asset (e.g. a single MCL-built `YAML64.ahk`) is exposed directly as `modules/<import name>.ahk`. `sha256` is required and verified. Prefer this over a raw `tarball` URL for anything published as a release. |
 | `path` | `{ "path": "../rel/or/abs" }` | A local directory. Not reproducible, so **excluded from the lockfile**. |
 
-An optional `subdir` on any source points at the module root inside the fetched tree when it is not the
-repository/archive root.
+An optional `subdir` points at the module root inside the fetched tree when it is not the
+repository/archive root. It applies to any tree-shaped source (`git`/`gist`/`tarball`/`path`, and archive
+`release` assets); a single-file `release` asset has no tree, so it takes no `subdir`.
 
 ## Aliases
 
@@ -115,7 +117,7 @@ The key still identifies the package in the manifest and lockfile; only the impo
 ```
 
 - `source` is the manifest source identity, changing it will cause `ahkbuild` to re-resolve the dependency.
-- `resolved` is the immutable revision. For git / gist sources, it is a commit SHA, for tarballs a URL.
+- `resolved` is the immutable revision. For git / gist sources, it is a commit SHA; for tarball / release sources, the download URL.
 - `checksum` is `sha256:<hex>` over the fetched tree.
 
 To ensure reproducibility, use the `--locked` flag, which will error if restoring dependencies would cause a

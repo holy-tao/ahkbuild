@@ -52,14 +52,40 @@ fn validate_alias(alias: &str) -> Result<(), String> {
 }
 
 /// Where a dependency's bytes come from. `git` is a real clone of a `.git` URL (any forge);
-/// `gist` is the same mechanism against a gist; `tarball` is a checksummed archive; `path` is a
-/// local directory (not reproducible, so excluded from the lockfile).
+/// `gist` is the same mechanism against a gist; `tarball` is a checksummed archive; `release` is a
+/// single checksummed file published as a GitHub release asset; `path` is a local directory (not
+/// reproducible, so excluded from the lockfile).
 #[derive(Debug, Clone, PartialEq)]
 pub enum DependencySource {
-    Git { url: String, selector: GitSelector },
-    Gist { id: String, rev: Option<String> },
-    Tarball { url: String, sha256: String },
-    Path { path: PathBuf },
+    Git {
+        url: String,
+        selector: GitSelector,
+    },
+    Gist {
+        id: String,
+        rev: Option<String>,
+    },
+    Tarball {
+        url: String,
+        sha256: String,
+    },
+    /// An asset downloaded from a GitHub release. The download URL is derived as
+    /// `https://github.com/<repo>/releases/download/<tag>/<asset>`. An archive asset
+    /// (`.zip`/`.tar.gz`/`.tgz`) is extracted like a `tarball` (and honors `subdir`); any other
+    /// asset is treated as a single `.ahk` module file (e.g. an MCL-built script whose embedded
+    /// machine code keeps it out of the repo tree), exposed as `modules/<import name>.ahk`.
+    GithubRelease {
+        /// `owner/repo`, e.g. `holy-tao/YAML`.
+        repo: String,
+        /// The release tag, e.g. `v0.5.0`.
+        tag: String,
+        /// The asset file name within the release, e.g. `YAML64.ahk`.
+        asset: String,
+        sha256: String,
+    },
+    Path {
+        path: PathBuf,
+    },
 }
 
 /// The revision selector for a `git` source. `Default` means the remote's default branch HEAD,
@@ -83,12 +109,15 @@ impl<'de> Deserialize<'de> for DependencySpec {
             git: Option<String>,
             gist: Option<String>,
             tarball: Option<String>,
+            release: Option<String>,
             path: Option<PathBuf>,
-            // git/gist revision selectors.
+            // git/gist revision selectors; `tag` is also the release selector.
             tag: Option<String>,
             branch: Option<String>,
             rev: Option<String>,
-            // tarball integrity.
+            // release asset file name.
+            asset: Option<String>,
+            // tarball/release integrity.
             sha256: Option<String>,
             // Common.
             subdir: Option<String>,
@@ -106,6 +135,7 @@ impl<'de> Deserialize<'de> for DependencySpec {
             ("git", r.git.is_some()),
             ("gist", r.gist.is_some()),
             ("tarball", r.tarball.is_some()),
+            ("release", r.release.is_some()),
             ("path", r.path.is_some()),
         ];
         let present: Vec<&str> = kinds.iter().filter(|(_, v)| *v).map(|(k, _)| *k).collect();
@@ -113,12 +143,12 @@ impl<'de> Deserialize<'de> for DependencySpec {
             [k] => *k,
             [] => {
                 return Err(D::Error::custom(
-                    "dependency must set one source: \"git\", \"gist\", \"tarball\", or \"path\"",
+                    "dependency must set one source: \"git\", \"gist\", \"tarball\", \"release\", or \"path\"",
                 ))
             }
             many => {
                 return Err(D::Error::custom(format!(
-                    "dependency sets conflicting sources ({}); use exactly one of git/gist/tarball/path",
+                    "dependency sets conflicting sources ({}); use exactly one of git/gist/tarball/release/path",
                     many.join(", ")
                 )))
             }
@@ -134,11 +164,17 @@ impl<'de> Deserialize<'de> for DependencySpec {
             }
         };
 
+        // `asset` names a release asset and is meaningless anywhere else.
+        reject(
+            kind != "release" && r.asset.is_some(),
+            "\"asset\" is only valid for a release source",
+        )?;
+
         let source = match kind {
             "git" => {
                 reject(
                     r.sha256.is_some(),
-                    "\"sha256\" is only valid for a tarball source",
+                    "\"sha256\" is only valid for a tarball or release source",
                 )?;
                 let selector = match (r.tag, r.branch, r.rev) {
                     (Some(t), None, None) => GitSelector::Tag(t),
@@ -159,7 +195,7 @@ impl<'de> Deserialize<'de> for DependencySpec {
             "gist" => {
                 reject(
                     r.sha256.is_some(),
-                    "\"sha256\" is only valid for a tarball source",
+                    "\"sha256\" is only valid for a tarball or release source",
                 )?;
                 reject(
                     r.tag.is_some() || r.branch.is_some(),
@@ -180,6 +216,44 @@ impl<'de> Deserialize<'de> for DependencySpec {
                     .ok_or_else(|| D::Error::custom("tarball source requires \"sha256\""))?;
                 DependencySource::Tarball {
                     url: r.tarball.unwrap(),
+                    sha256,
+                }
+            }
+            "release" => {
+                reject(
+                    r.branch.is_some() || r.rev.is_some(),
+                    "release source accepts only \"tag\" (not \"branch\"/\"rev\")",
+                )?;
+                let repo = r.release.unwrap();
+                let tag = r
+                    .tag
+                    .ok_or_else(|| D::Error::custom("release source requires \"tag\""))?;
+                let asset = r
+                    .asset
+                    .ok_or_else(|| D::Error::custom("release source requires \"asset\""))?;
+                // The asset becomes a store file name and a link-farm entry; a path separator would
+                // escape either, so keep it a bare file name.
+                if asset.contains('/') || asset.contains('\\') {
+                    return Err(D::Error::custom(format!(
+                        "release asset {asset:?} must be a bare file name, not a path"
+                    )));
+                }
+                // `subdir` selects the module root inside an *archive* asset; a single-file asset has
+                // no tree to descend into.
+                let is_archive = asset.ends_with(".zip")
+                    || asset.ends_with(".tar.gz")
+                    || asset.ends_with(".tgz");
+                reject(
+                    r.subdir.is_some() && !is_archive,
+                    "\"subdir\" only applies to an archive release asset (.zip/.tar.gz/.tgz)",
+                )?;
+                let sha256 = r
+                    .sha256
+                    .ok_or_else(|| D::Error::custom("release source requires \"sha256\""))?;
+                DependencySource::GithubRelease {
+                    repo,
+                    tag,
+                    asset,
                     sha256,
                 }
             }
@@ -313,6 +387,96 @@ mod tests {
                 "dependencies": {"X": {"git": "u", "alias": "1yaml"}}}"#,
         )
         .is_err());
+    }
+
+    #[test]
+    fn release_parses_and_requires_its_fields() {
+        let c = parse(
+            r#"{
+            "interpreter": {"version": "2.1-alpha.27"},
+            "dependencies": {
+                "YAML64.ahk": {
+                    "release": "holy-tao/YAML",
+                    "tag": "v0.5.0",
+                    "asset": "YAML64.ahk",
+                    "sha256": "ff",
+                    "alias": "YAML"
+                }
+            }
+        }"#,
+        );
+        assert_eq!(
+            c.dependencies["YAML64.ahk"].source,
+            DependencySource::GithubRelease {
+                repo: "holy-tao/YAML".into(),
+                tag: "v0.5.0".into(),
+                asset: "YAML64.ahk".into(),
+                sha256: "ff".into(),
+            }
+        );
+        assert_eq!(
+            c.dependencies["YAML64.ahk"].import_name("YAML64.ahk"),
+            "YAML"
+        );
+
+        // Each required field is enforced.
+        for missing in [
+            r#"{"release": "o/r", "asset": "a.ahk", "sha256": "ff"}"#, // no tag
+            r#"{"release": "o/r", "tag": "v1", "sha256": "ff"}"#,      // no asset
+            r#"{"release": "o/r", "tag": "v1", "asset": "a.ahk"}"#,    // no sha256
+        ] {
+            assert!(
+                serde_json::from_str::<BuildConfig>(&format!(
+                    r#"{{"interpreter": {{"version": "2.1-alpha.27"}}, "dependencies": {{"X": {missing}}}}}"#
+                ))
+                .is_err(),
+                "expected error for {missing}"
+            );
+        }
+    }
+
+    #[test]
+    fn release_archive_asset_accepts_subdir() {
+        // An archive release asset behaves like a tarball, so `subdir` is allowed.
+        let c = parse(
+            r#"{
+            "interpreter": {"version": "2.1-alpha.27"},
+            "dependencies": {
+                "Rapid": {
+                    "release": "o/Rapid",
+                    "tag": "v2.0.0",
+                    "asset": "Rapid.zip",
+                    "sha256": "ff",
+                    "subdir": "src"
+                }
+            }
+        }"#,
+        );
+        assert_eq!(c.dependencies["Rapid"].subdir.as_deref(), Some("src"));
+        assert!(matches!(
+            c.dependencies["Rapid"].source,
+            DependencySource::GithubRelease { .. }
+        ));
+    }
+
+    #[test]
+    fn release_rejects_stray_fields() {
+        // A branch selector, a subdir, and an asset with a path separator are all invalid.
+        for dep in [
+            r#"{"release": "o/r", "tag": "v1", "asset": "a.ahk", "sha256": "ff", "branch": "main"}"#,
+            r#"{"release": "o/r", "tag": "v1", "asset": "a.ahk", "sha256": "ff", "subdir": "src"}"#,
+            r#"{"release": "o/r", "tag": "v1", "asset": "sub/a.ahk", "sha256": "ff"}"#,
+            // `asset` on a non-release source is rejected.
+            r#"{"git": "u", "asset": "a.ahk"}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<BuildConfig>(&format!(
+                    r#"{{"interpreter": {{"version": "2.1-alpha.27"}}, "dependencies": {{"X": {dep}}}}}"#
+                ))
+                .is_err(),
+                "expected error for {dep}"
+            );
+        }
     }
 
     #[test]

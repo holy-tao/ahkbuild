@@ -253,25 +253,27 @@ See [Dependencies]({{< relref "/docs/dependencies" >}}) for the full model.
     "GuiEnhancer": { "git": "https://github.com/nperovic/GuiEnhancerKit.git", "tag": "v1.0.3" },
     "gistCode":    { "gist": "a1b2c3d4e5f6", "rev": "deadbeef" },
     "Rapid":       { "tarball": "https://example.com/rapid.zip", "sha256": "…", "subdir": "src" },
+    "YAML64.ahk":  { "release": "holy-tao/YAML", "tag": "v0.5.0", "asset": "YAML64.ahk", "sha256": "…", "alias": "YAML" },
     "MyLocal":     { "path": "../shared/MyLocal" }
   }
 }
 ```
 
-Each value sets **exactly one** source key (`git`, `gist`, `tarball`, or `path`); setting zero or
-more than one is an error.
+Each value sets **exactly one** source key (`git`, `gist`, `tarball`, `release`, or `path`); setting
+zero or more than one is an error.
 
 | Source key | Companion fields | Description |
 | --- | --- | --- |
 | `git` | one of `tag` / `branch` / `rev` (optional) | A `.git` clone URL for any forge. No selector uses the default branch HEAD. Pinned to a commit SHA in the lock. |
 | `gist` | `rev` (optional) | A gist id (gists are git repos). `rev` pins a commit; latest HEAD otherwise. |
 | `tarball` | `sha256` (**required**) | A `.zip` or `.tar.gz` URL. `sha256` of the archive bytes is verified on download. |
+| `release` | `tag` + `asset` + `sha256` (all **required**) | A GitHub release asset from `https://github.com/<owner/repo>/releases/download/<tag>/<asset>`. An archive asset is extracted like a `tarball`; any other asset is exposed directly as `modules/<import name>.ahk` (for single-file libraries, e.g. an MCL build). `sha256` of the downloaded bytes is verified. |
 | `path` | - | A local directory (relative paths resolve against the project root). Not reproducible, so **excluded from the lockfile**. |
 
 | Common field | Type | Description |
 | --- | --- | --- |
-| `subdir` | string | Sub-directory within the fetched tree that holds the module, when it is not the tree root. |
-| `alias` | string | Local import name, overriding the key. Use when the key (often the repo/tarball name, e.g. `library.ahk`) is not a valid AHK identifier. The alias must itself be a valid identifier. |
+| `subdir` | string | Sub-directory within the fetched tree that holds the module, when it is not the tree root. Not valid on a single-file `release` asset. |
+| `alias` | string | Local import name, overriding the key. Use when the key (often the repo/tarball/asset name, e.g. `library.ahk`) is not a valid AHK identifier. The alias must itself be a valid identifier. |
 
-`sha256` is rejected on non-tarball sources; `tag`/`branch`/`rev` are rejected on `tarball`/`path`;
-`git` accepts at most one selector.
+`sha256` is valid only on `tarball`/`release`; `asset` only on `release`; `tag`/`branch`/`rev` are
+rejected on `tarball`/`path` (a `release` accepts only `tag`); `git` accepts at most one selector.
