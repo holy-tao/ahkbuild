@@ -157,6 +157,15 @@ enum PackageCommand {
         #[arg(long)]
         config: Option<PathBuf>,
     },
+    /// Re-resolve floating (git/gist) dependencies to their latest revision and update the lock
+    Update {
+        /// Dependencies to update. If omitted, every updatable dependency is refreshed.
+        names: Vec<String>,
+
+        /// Path to ahkbuild.json. If omitted, the file is discovered by walking up from cwd.
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -352,6 +361,7 @@ fn main() -> Result<()> {
                 package::restore(config.as_deref(), *locked)
             }
             PackageCommand::List { config } => package::list(config.as_deref()),
+            PackageCommand::Update { names, config } => package::update(config.as_deref(), names),
         },
         Commands::Run {
             entry,

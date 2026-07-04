@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use ahkbuild_pkg::{PackageStatus, RestoreOptions, RestoreReport};
+use ahkbuild_pkg::{PackageStatus, RestoreOptions, RestoreReport, UpdateReport};
 use anyhow::Result;
 
 pub(crate) fn restore(config_path: Option<&Path>, locked: bool) -> Result<()> {
@@ -62,6 +62,36 @@ pub(crate) fn list(config_path: Option<&Path>) -> Result<()> {
         println!("    status:  {}", status_line(s));
     }
     Ok(())
+}
+
+pub(crate) fn update(config_path: Option<&Path>, names: &[String]) -> Result<()> {
+    let (config, project_root) = crate::config_util::load(config_path)?;
+    let report = ahkbuild_pkg::update(&config, &project_root, names)?;
+    report_update(&report);
+    Ok(())
+}
+
+fn report_update(report: &UpdateReport) {
+    let moved: Vec<_> = report.changes.iter().filter(|c| c.moved).collect();
+    for c in &moved {
+        let from = c
+            .from
+            .as_deref()
+            .map(short_rev)
+            .unwrap_or_else(|| "(new)".to_string());
+        println!("  {}: {} -> {}", c.name, from, short_rev(&c.to));
+    }
+    for name in &report.skipped {
+        println!("  {name}: pinned by ahkbuild.json, not updated");
+    }
+
+    let n = moved.len();
+    if n == 0 {
+        println!("Everything is already up to date.");
+    } else {
+        let noun = if n == 1 { "dependency" } else { "dependencies" };
+        println!("Updated {n} {noun}.");
+    }
 }
 
 /// A one-line "pin - present - linked" summary for a dependency.

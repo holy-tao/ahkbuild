@@ -35,6 +35,20 @@ pub fn source_id(src: &DependencySource) -> String {
     }
 }
 
+/// Whether a source's resolved revision can move under its fixed manifest selector, so `update` can
+/// re-resolve and re-pin it purely by rewriting the lock. `git` (any selector but `rev`) and a
+/// `gist` without an explicit `rev` float on the remote; everything else is either fully pinned by
+/// the manifest (`rev`, and the `sha256` on `tarball`/`release`) or never locked (`path`).
+pub fn is_updatable(src: &DependencySource) -> bool {
+    match src {
+        DependencySource::Git { selector, .. } => !matches!(selector, GitSelector::Rev(_)),
+        DependencySource::Gist { rev, .. } => rev.is_none(),
+        DependencySource::Tarball { .. }
+        | DependencySource::GithubRelease { .. }
+        | DependencySource::Path { .. } => false,
+    }
+}
+
 /// The `.git` clone URL for a gist id.
 pub fn gist_url(id: &str) -> String {
     format!("https://gist.github.com/{id}.git")
@@ -117,6 +131,37 @@ mod tests {
             release_asset_url("holy-tao/YAML", "v0.5.0", "YAML64.ahk"),
             "https://github.com/holy-tao/YAML/releases/download/v0.5.0/YAML64.ahk"
         );
+    }
+
+    #[test]
+    fn updatable_only_for_floating_git_and_gist() {
+        let git = |selector| DependencySource::Git {
+            url: "u".into(),
+            selector,
+        };
+        assert!(is_updatable(&git(GitSelector::Default)));
+        assert!(is_updatable(&git(GitSelector::Branch("main".into()))));
+        assert!(is_updatable(&git(GitSelector::Tag("v1".into()))));
+        // A pinned commit, a gist rev, and the manifest-pinned tarball/release are all fixed.
+        assert!(!is_updatable(&git(GitSelector::Rev("abc".into()))));
+        assert!(is_updatable(&DependencySource::Gist {
+            id: "g".into(),
+            rev: None,
+        }));
+        assert!(!is_updatable(&DependencySource::Gist {
+            id: "g".into(),
+            rev: Some("abc".into()),
+        }));
+        assert!(!is_updatable(&DependencySource::Tarball {
+            url: "u".into(),
+            sha256: "ff".into(),
+        }));
+        assert!(!is_updatable(&DependencySource::GithubRelease {
+            repo: "o/r".into(),
+            tag: "v1".into(),
+            asset: "a.ahk".into(),
+            sha256: "ff".into(),
+        }));
     }
 
     #[test]
