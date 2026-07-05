@@ -333,6 +333,29 @@ fn defineprop_with_unreferenced_name_is_pruned() {
 }
 
 #[test]
+fn defineprop_overriding_init_is_never_pruned() {
+    // `__Init` is a runtime-invoked meta-method with no static referencer; a dynamic override
+    // via `DefineProp("__Init", ...)` (as in the Record-schema pattern) must survive shaking.
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(
+        tmp.path(),
+        "main.ahk",
+        "o := C()\no.Used()\n\nclass C {\n    __New() {\n        this.DefineProp(\"__Init\", {Call: (self, *) => Helper(self)})\n    }\n    Used() {\n    }\n}\n\nHelper(self) {\n}\n",
+    );
+    let (p, r) = run(&main);
+    assert!(
+        !any_dead_text_contains(&p, &r, "DefineProp"),
+        "a DefineProp overriding the protected __Init meta-method must be kept; dead spans: {:?}",
+        r.dead.iter().map(|&n| p.text(n)).collect::<Vec<_>>()
+    );
+    // Its only-referenced-here helper must therefore also survive.
+    assert!(
+        !any_dead_text_contains(&p, &r, "Helper(self) {"),
+        "the helper referenced only inside the kept __Init override must survive"
+    );
+}
+
+#[test]
 fn defineprop_with_referenced_name_survives() {
     let tmp = tempfile::tempdir().unwrap();
     let main = write(

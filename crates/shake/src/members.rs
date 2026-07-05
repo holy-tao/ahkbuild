@@ -24,7 +24,8 @@ use ahkbuild_ir::{children, NodeId, NodeKind, Program};
 /// Meta-functions the AHK runtime can invoke implicitly (without explicit user code), so they
 /// are never pruned from a live class. Includes the v2.1 additions `__Ref` and `__Value`.
 const PROTECTED: &[&str] = &[
-    "__new", "__delete", "__call", "__get", "__set", "__item", "__enum", "call", "__ref", "__value",
+    "__new", "__delete", "__call", "__get", "__set", "__item", "__enum", "call", "__ref",
+    "__value", "__init", "tostring",
 ];
 
 /// Whether `name` (any case) is a protected meta-member that must never be pruned.
