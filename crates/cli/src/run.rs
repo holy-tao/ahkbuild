@@ -64,11 +64,7 @@ pub(crate) fn run(
     let base = std::env::var("AhkImportPath").unwrap_or_else(|_| DEFAULT_IMPORT_PATH.to_string());
     let import_path = format!("{};{}", modules.display(), base);
 
-    tracing::info!(
-        interpreter = %interp.display(),
-        entry = %entry.display(),
-        "running",
-    );
+    tracing::debug!(%import_path, interpreter = interp.display().to_string());
 
     let mut interpereter_args = vec!["/ErrorStdOut=Utf-8"];
     if *validate_only {
@@ -77,7 +73,8 @@ pub(crate) fn run(
 
     // Pipe + relay stdout/stderr rather than inheriting, for the same GUI-subsystem handle reason
     // as build scripts (see `scripts::run_one`).
-    let mut child = Command::new(&interp)
+    let mut pin = Command::new(&interp);
+    let cmd = pin
         .args(interpereter_args)
         .arg(&entry)
         .args(args)
@@ -85,7 +82,11 @@ pub(crate) fn run(
         .env("AhkImportPath", &import_path)
         .stdin(child_stdin())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    tracing::info!("{:?}", cmd);
+
+    let mut child = cmd
         .spawn()
         .with_context(|| format!("launching {}", interp.display()))?;
 
