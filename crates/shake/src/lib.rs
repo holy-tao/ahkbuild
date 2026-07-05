@@ -62,6 +62,7 @@ impl ShakeResult {
 /// shaken at the arm level: reachability descends only into the surviving arm, so any
 /// declaration reachable *only* from a dropped arm shakes out with everything else.
 pub fn shake(program: &Program, plan: &BundlePlan, fold: Option<&FoldResult>) -> ShakeResult {
+    let _span = tracing::info_span!("shake").entered();
     let resolved = resolve::resolve(program, plan);
 
     // Build the program-wide member-name table, then prune standalone `DefineProp` calls whose
@@ -125,6 +126,17 @@ pub fn shake(program: &Program, plan: &BundlePlan, fold: Option<&FoldResult>) ->
         }
     }
 
+    tracing::debug!(
+        dead_decls = result.dead.len(),
+        dead_modules = result.dead_modules.len(),
+        dropped_imports = result.dropped_imports.len(),
+        member_pruning = if table.is_blown() {
+            "disabled"
+        } else {
+            "enabled"
+        },
+        "tree-shaking complete",
+    );
     result
 }
 

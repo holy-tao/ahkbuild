@@ -319,8 +319,36 @@ fn extract_dynamic_member(
     }
 
     if !has_constant {
-        table.blow_up();
+        blow_up_or_trust(program, table, stmt, member, "dynamic member access");
     }
+}
+
+/// Either blow up the member-name table (disabling per-member pruning program-wide) because a
+/// dynamic construct at `at` has no extractable name, or - if the enclosing statement carries
+/// `;@ahkbuild-safe` - trust the author that the access is safe and keep pruning. Traces either
+/// way so a user can see (`-v` for the suppression, default for the blow-up) what defeated
+/// pruning and how to fix it. `what` names the construct for the message.
+fn blow_up_or_trust(
+    program: &Program,
+    table: &mut MemberNameTable,
+    stmt: NodeId,
+    at: NodeId,
+    what: &str,
+) {
+    if program.has_directive(stmt, "ahkbuild-safe") {
+        tracing::debug!(
+            at = %program.node_location(at),
+            "{what} marked ;@ahkbuild-safe - keeping per-member pruning enabled",
+        );
+        return;
+    }
+    tracing::warn!(
+        at = %program.node_location(at),
+        "{what} with no extractable name disables per-member pruning program-wide (every class \
+         kept whole); annotate the statement with ;@ahkbuild-safe or ;@AhkBuild-ResolvesTo to \
+         keep pruning",
+    );
+    table.blow_up();
 }
 
 /// If `call` is a reflection builtin (`ObjBindMethod`/`GetMethod`/`GetOwnPropDesc`) with a
@@ -381,7 +409,13 @@ fn extract_string_expr(
         }
         return;
     }
-    table.blow_up();
+    blow_up_or_trust(
+        program,
+        table,
+        stmt,
+        expr,
+        "reflection call with a non-literal name",
+    );
 }
 
 /// The `;@AhkBuild-ResolvesTo` names attached to statement `stmt`, if any. Directives are keyed

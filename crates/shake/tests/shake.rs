@@ -237,6 +237,58 @@ fn resolves_to_directive_keeps_named_members() {
 }
 
 #[test]
+fn safe_directive_keeps_member_pruning_on_fully_dynamic_access() {
+    // A fully-dynamic access normally blows up the member-name table and keeps every class
+    // whole. `;@ahkbuild-safe` vouches for it, so pruning continues and the unreferenced
+    // members shake out.
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(
+        tmp.path(),
+        "main.ahk",
+        "o := C()\nn := \"A\"\n;@ahkbuild-safe\no.%n%()\n\nclass C {\n    A() {\n    }\n    B() {\n    }\n}\n",
+    );
+    let (p, r) = run(&main);
+    // The table is not blown; nothing references A or B statically, so both prune.
+    assert_eq!(dead_member_names(&p, &r), names(&["A", "B"]));
+}
+
+#[test]
+fn safe_directive_lets_a_dynamic_reference_module_shake() {
+    // A `%name%` deref in live code normally keeps its whole module (every declaration and
+    // import). `;@ahkbuild-safe` suppresses that, so an unreferenced function shakes out.
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(
+        tmp.path(),
+        "main.ahk",
+        "fnName := \"Foo\"\n;@ahkbuild-safe\n%fnName%()\n\nFoo() {\n}\n\nUnused() {\n}\n",
+    );
+    let (p, r) = run(&main);
+    assert!(
+        dead_names(&p, &r).contains("unused"),
+        "the unreferenced function should shake out; dead: {:?}",
+        dead_names(&p, &r)
+    );
+}
+
+#[test]
+fn dynamic_reference_without_safe_keeps_the_module() {
+    // The counterpart to the test above: without `;@ahkbuild-safe`, the `%name%` deref keeps
+    // every declaration in the module, so the otherwise-dead function survives.
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(
+        tmp.path(),
+        "main.ahk",
+        "fnName := \"Foo\"\n%fnName%()\n\nFoo() {\n}\n\nUnused() {\n}\n",
+    );
+    let (p, r) = run(&main);
+    assert!(
+        !dead_names(&p, &r).contains("unused"),
+        "the dynamic reference should keep the whole module; dead: {:?}",
+        dead_names(&p, &r)
+    );
+}
+
+#[test]
 fn objbindmethod_literal_keeps_named_member() {
     let tmp = tempfile::tempdir().unwrap();
     let main = write(

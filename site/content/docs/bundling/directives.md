@@ -15,6 +15,7 @@ Directives are case-insensitive and attach to the statements that directly follo
 | --- | --- | --- |
 | `;@AhkBuild-Keep` | Force a statement to survive [tree-shaking](#ahkbuild-keep). | This page |
 | `;@AhkBuild-ResolvesTo` | Name the targets of a [dynamic member access](#ahkbuild-resolvesto). | This page |
+| `;@AhkBuild-Safe` | Vouch that a [dynamic reference](#ahkbuild-safe) won't defeat analysis. | This page |
 | `;@ahkbuild-const` | Assert a value is a [build-time constant]({{< relref "/docs/bundling/constant-folding#the-ahkbuild-const-directive" >}}). | [Constant folding]({{< relref "/docs/bundling/constant-folding" >}}) |
 | `;@AhkBuild-IgnoreBegin` / `End` | Strip a region of source before parsing. | [Preprocessing]({{< relref "/docs/bundling/preprocessing" >}}) |
 
@@ -54,3 +55,28 @@ pruned.
 > The directive applies only when the access is **fully dynamic**. If the expression already has an
 > extractable constant part (`obj.Get%x%`, `ObjBindMethod(obj, "On" name)`), the bundler uses that
 > instead and the directive is ignored.
+
+## `;@AhkBuild-Safe`
+
+When you know a dynamic reference is safe - it will only ever resolve to code that survives on its own,
+as is common when building or reflecting over types at runtime - you can promise this to the bundler by
+marking the statement `;@AhkBuild-Safe`. This prevents the reference from blowing up member pruning.
+
+```autohotkey
+cls := BuildClass(defn)
+;@AhkBuild-Safe
+cls.%member% := handler
+```
+
+Unlike [`;@AhkBuild-ResolvesTo`](#ahkbuild-resolvesto), it does not name any members - it asserts the
+reference contributes no reachability edges at all, so analysis continues as if it wasn't there.
+
+> [!WARNING]
+> This is a promise, not a hint. If the reference actually reaches code that nothing else keeps, that
+> code shakes out and the bundle breaks at runtime. Use [`;@AhkBuild-ResolvesTo`](#ahkbuild-resolvesto)
+> instead when you *can* enumerate the targets, and [`;@AhkBuild-Keep`](#ahkbuild-keep) to pin anything
+> the reference relies on.
+
+Without the directive, the bundler logs a warning naming the file and line whenever a dynamic reference
+disables pruning, so you can find the accesses worth annotating. Run with `-v`/`-vv` (or
+`AHKBUILD_LOG=ahkbuild_shake=debug`) to trace every shake decision.

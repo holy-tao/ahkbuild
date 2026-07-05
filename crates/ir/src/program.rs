@@ -67,6 +67,24 @@ impl Program {
         self.span_text(self.arena[id].span)
     }
 
+    /// A human-readable `file:line` for a span's start byte, for diagnostics/tracing. The line
+    /// is 1-based within the span's originating file.
+    pub fn location(&self, span: Span) -> String {
+        let file = self.sources.file_at(span.start);
+        let offset = (span.start - file.base) as usize;
+        let line = file.text[..offset.min(file.text.len())]
+            .bytes()
+            .filter(|&b| b == b'\n')
+            .count()
+            + 1;
+        format!("{}:{}", file.name, line)
+    }
+
+    /// A `file:line` for a node's span (see [`Program::location`]).
+    pub fn node_location(&self, id: NodeId) -> String {
+        self.location(self.arena[id].span)
+    }
+
     /// Whether statement/member `node` carries a `;@`-directive named `name` (case-insensitive).
     pub fn has_directive(&self, node: NodeId, name: &str) -> bool {
         self.directives.get(&node).is_some_and(|ds| {

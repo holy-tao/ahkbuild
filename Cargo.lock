@@ -190,6 +190,7 @@ dependencies = [
  "ahkbuild-link",
  "ahkbuild-syntax",
  "tempfile",
+ "tracing",
 ]
 
 [[package]]

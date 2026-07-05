@@ -10,6 +10,7 @@ publish = false
 ahkbuild-ir.workspace = true
 ahkbuild-link.workspace = true
 ahkbuild-fold.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 ahkbuild-syntax.workspace = true

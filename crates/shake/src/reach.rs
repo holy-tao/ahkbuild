@@ -165,24 +165,34 @@ impl Marker<'_> {
     /// class/struct, descend only into the members that survive per-member pruning (recording
     /// the rest as dead). Pruned `DefineProp` calls are a hard barrier — never descended.
     fn walk(&mut self, id: NodeId, mref: ModuleRef) {
-        let mut stack = vec![id];
-        while let Some(n) = stack.pop() {
+        // Each entry pairs a node with the nearest enclosing directive-bearing statement, so a
+        // `;@ahkbuild-safe` directive can suppress a blow-up triggered deep in its subtree.
+        let mut stack = vec![(id, id)];
+        while let Some((n, stmt)) = stack.pop() {
             if self.dead_defineprops.contains(&n) {
                 continue;
             }
-            self.resolve_edges(n, mref);
+            self.resolve_edges(n, mref, stmt);
             if let Some(arm) = self.branch_arm(n) {
                 // A folded `if`/ternary: walk only the surviving arm, skipping the condition
                 // and dead arm so declarations they alone reach can shake out.
-                stack.extend(arm);
+                stack.extend(arm.into_iter().map(|a| (a, stmt)));
                 continue;
             }
+            // Descending into a block/module/type body makes each child its own enclosing
+            // statement (directives attach to body elements and class members).
+            let descends = descends_to_stmt(&self.program.arena[n].kind);
+            let child_stmt = |child| if descends { child } else { stmt };
             match self.member_descent(n) {
                 Some((keep, dead)) => {
                     self.dead_members.extend(dead);
-                    stack.extend(keep);
+                    stack.extend(keep.into_iter().map(|c| (c, child_stmt(c))));
                 }
-                None => stack.extend(children(&self.program.arena[n].kind)),
+                None => stack.extend(
+                    children(&self.program.arena[n].kind)
+                        .into_iter()
+                        .map(|c| (c, child_stmt(c))),
+                ),
             }
         }
     }
@@ -273,7 +283,9 @@ impl Marker<'_> {
     }
 
     /// Push every outgoing reference of node `n` (resolved in module `mref`) onto the worklist.
-    fn resolve_edges(&mut self, n: NodeId, mref: ModuleRef) {
+    /// `stmt` is the nearest enclosing directive-bearing statement, consulted for a
+    /// `;@ahkbuild-safe` escape hatch when a dynamic construct would otherwise blow up the module.
+    fn resolve_edges(&mut self, n: NodeId, mref: ModuleRef, stmt: NodeId) {
         let program = self.program;
         // Extract owned edge data first so the arena borrow ends before we mutate `self`.
         enum Edge {
@@ -307,7 +319,18 @@ impl Marker<'_> {
         };
         match edge {
             Edge::Name(name) => self.reference(&name, mref),
-            Edge::BlowUp => self.blow_up(mref),
+            // A dynamic construct hides its target name. Unless the author vouched for it with
+            // `;@ahkbuild-safe`, conservatively keep the whole module (and its imports).
+            Edge::BlowUp => {
+                if self.program.has_directive(stmt, "ahkbuild-safe") {
+                    tracing::debug!(
+                        at = %self.program.node_location(n),
+                        "dynamic reference marked ;@ahkbuild-safe - not keeping the module whole",
+                    );
+                } else {
+                    self.blow_up(mref, n);
+                }
+            }
             Edge::None => {}
         }
     }
@@ -348,12 +371,17 @@ impl Marker<'_> {
     }
 
     /// Conservatively keep every declaration of `m` (a dynamic reference could resolve to any
-    /// of them) and treat all of `m`'s imports as used — a `%val%` deref can name an imported
-    /// symbol just as easily as a local one.
-    fn blow_up(&mut self, m: ModuleRef) {
+    /// of them) and treat all of `m`'s imports as used - a `%val%` deref can name an imported
+    /// symbol just as easily as a local one. `cause` is the dynamic construct that forced this,
+    /// for the trace. Idempotent per module, so the trace fires once.
+    fn blow_up(&mut self, m: ModuleRef, cause: NodeId) {
         if !self.blown.insert(m) {
             return;
         }
+        tracing::debug!(
+            at = %self.program.node_location(cause),
+            "dynamic reference identified; abandoning tree-shaking",
+        );
         self.enqueue_all_decls(m);
         let targets: Vec<(NodeId, ModuleRef)> = match self.resolved.imports.get(&m) {
             Some(imports) => imports
@@ -393,4 +421,16 @@ impl Marker<'_> {
 
 fn ident(program: &Program, span: Span) -> String {
     program.span_text(span).trim().to_ascii_lowercase()
+}
+
+/// Whether descending into `kind` crosses a statement boundary - a block/module/type body whose
+/// children are each their own directive-bearing statement (mirrors the member-name scan).
+fn descends_to_stmt(kind: &NodeKind) -> bool {
+    matches!(
+        kind,
+        NodeKind::Block { .. }
+            | NodeKind::Module(_)
+            | NodeKind::ClassDecl(_)
+            | NodeKind::StructDecl(_)
+    )
 }

@@ -83,8 +83,16 @@ Partial names still help: `obj.Get%suffix%` keeps every member *starting with* `
 (or expressions which fold to string literals) are also supported. That said, any dynamic expression is
 liable to over-keep live code.
 
-If a dynamic access is known to resolve to a limited set of constant values, use the `;@ahkbuild-resolves-to`
-directive to enumerate them.
+If a dynamic access is known to resolve to a limited set of constant values, use the
+[`;@AhkBuild-ResolvesTo`]({{< relref "/docs/bundling/directives#ahkbuild-resolvesto" >}}) directive to
+enumerate them. If it is safe but you *can't* enumerate the targets - a common case when constructing or
+reflecting over types at runtime - mark the statement
+[`;@AhkBuild-Safe`]({{< relref "/docs/bundling/directives#ahkbuild-safe" >}}) to tell the bundler not to
+blow up on its account.
+
+Whenever a dynamic reference does defeat analysis, the bundler emits a warning naming the file and line,
+so the accesses worth annotating are easy to find. Raise the verbosity (`-v`/`-vv`, or
+`AHKBUILD_LOG=ahkbuild_shake=debug`) to trace each shake decision.
 
 [dereference]: https://www.autohotkey.com/docs/alpha/Variables.htm#deref
 [dynamic reference]: https://www.autohotkey.com/docs/alpha/Language.htm#dynamic-variables
