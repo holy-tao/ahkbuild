@@ -421,12 +421,20 @@ impl<'a> Lowerer<'a> {
     }
 
     fn warn_trailing(&self, pending: &[DirectiveComment]) {
-        for d in pending {
-            tracing::warn!(
-                directive = self.slice(d.name),
-                "directive `;@<name>` has no following statement",
-            );
-        }
+        pending
+            .iter()
+            .filter_map(|d| {
+                if self
+                    .slice(d.name)
+                    .to_ascii_lowercase()
+                    .starts_with("ahkbuild")
+                {
+                    Some(self.slice(d.name))
+                } else {
+                    None
+                }
+            })
+            .for_each(|name| tracing::warn!("directive `;@{}` has no following statement", name));
     }
 
     // -----------------------------------------------------------------
