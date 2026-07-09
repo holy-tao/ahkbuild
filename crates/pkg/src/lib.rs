@@ -19,7 +19,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use ahkbuild_config::{BuildConfig, DependencySource};
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 
 pub use farm::{ahkbuild_dir, modules_dir};
 pub use index::{list_store, prune, PruneReport, RemovedEntry, StorePackage};
@@ -308,20 +308,15 @@ fn drive(
                     }
                 };
 
-                // Ensure the store holds this revision; repopulate from the pinned id if not.
-                let hash = entry.content_hash()?.to_string();
-                if !store::store_path(&hash)?.exists() {
-                    tracing::info!(resolved = %entry.resolved, "store miss; fetching pinned revision");
-                    let staged = fetch::fetch_pinned(src, &entry.resolved)?;
-                    let got = store::hash_tree(&staged.dir)?;
-                    if got != hash {
-                        bail!(
-                            "content hash mismatch for {name:?}\n  expected: sha256:{hash}\n  got:      sha256:{got}"
-                        );
-                    }
-                    store::populate(&hash, &staged.dir)?;
-                    report.fetched += 1;
-                }
+                // Ensure the store holds this revision with matching contents; re-fetch the pinned
+                // id if it is missing or has drifted from the lock checksum.
+                ensure_store(
+                    src,
+                    name,
+                    entry.content_hash()?,
+                    &entry.resolved,
+                    &mut report,
+                )?;
 
                 entries.push(entry);
             }
@@ -359,4 +354,40 @@ fn drive(
         new: new_lock,
         report,
     })
+}
+
+/// Ensure the content-addressed store holds `hash` with contents that hash back to it, re-fetching
+/// the pinned `resolved` revision of `src` when the entry is missing or has drifted from the lock.
+/// `name` is used only for diagnostics; `report.fetched` is bumped whenever a fetch was needed.
+fn ensure_store(
+    src: &DependencySource,
+    name: &str,
+    hash: &str,
+    resolved: &str,
+    report: &mut RestoreReport,
+) -> Result<()> {
+    let dir = store::store_path(hash)?;
+    if dir.exists() {
+        if store::hash_tree(&dir)? == hash {
+            return Ok(());
+        }
+        // Contents drifted from the pinned checksum. `store::populate` treats an existing store dir
+        // as authoritative, so the corrupt copy must be removed before the good one can replace it.
+        tracing::info!(%resolved, "store contents drifted from the lock; refetching pinned revision");
+        std::fs::remove_dir_all(&dir)
+            .with_context(|| format!("removing drifted store entry {}", dir.display()))?;
+    } else {
+        tracing::info!(%resolved, "store miss; fetching pinned revision");
+    }
+
+    let staged = fetch::fetch_pinned(src, resolved)?;
+    let got = store::hash_tree(&staged.dir)?;
+    if got != hash {
+        bail!(
+            "content hash mismatch for {name:?}\n  expected: sha256:{hash}\n  got:      sha256:{got}"
+        );
+    }
+    store::populate(hash, &staged.dir)?;
+    report.fetched += 1;
+    Ok(())
 }
