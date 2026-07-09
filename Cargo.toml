@@ -35,6 +35,7 @@ serde = { version = "1", features = ["derive"] }
 # (`package add`/`remove`) never reshuffles the user's file.
 serde_json = { version = "1", features = ["preserve_order"] }
 editpe = "0.2"
+rayon = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "ansi"] }
 

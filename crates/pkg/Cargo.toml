@@ -18,6 +18,7 @@ zip = "2"
 tar = "0.4"
 flate2 = "1"
 sha2 = "0.10"
+rayon = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 junction = "1"

@@ -3,6 +3,7 @@
 //! versions.
 
 use anyhow::{Context, Result};
+use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
@@ -46,17 +47,80 @@ pub fn hash_tree(dir: &Path) -> Result<String> {
 
     rels.sort();
 
+    // Reads dominate the cost (tens of thousands of file opens, especially on Windows), while the
+    // SHA feed order must stay fixed to keep the hash stable. So parallelize the reads but update the
+    // hasher sequentially in sorted order. Files are read one bounded chunk at a time, keeping peak
+    // memory proportional to `CHUNK` rather than the whole tree.
+    const CHUNK: usize = 512;
+    let mut progress = Progress::new(rels.len());
     let mut hasher = Sha256::new();
-    for rel in &rels {
-        let full = dir.join(rel);
-        let bytes = std::fs::read(&full).with_context(|| format!("reading {}", full.display()))?;
-        let rel_str = rel.to_string_lossy().replace('\\', "/");
-        hasher.update(rel_str.as_bytes());
-        hasher.update([0u8]);
-        hasher.update((bytes.len() as u64).to_le_bytes());
-        hasher.update(&bytes);
+    for chunk in rels.chunks(CHUNK) {
+        let datas: Vec<Result<Vec<u8>>> = chunk
+            .par_iter()
+            .map(|rel| {
+                let full = dir.join(rel);
+                std::fs::read(&full).with_context(|| format!("reading {}", full.display()))
+            })
+            .collect();
+        for (rel, data) in chunk.iter().zip(datas) {
+            let bytes = data?;
+            let rel_str = rel.to_string_lossy().replace('\\', "/");
+            hasher.update(rel_str.as_bytes());
+            hasher.update([0u8]);
+            hasher.update((bytes.len() as u64).to_le_bytes());
+            hasher.update(&bytes);
+        }
+        progress.advance(chunk.len());
     }
+    progress.finish();
     Ok(hex(&hasher.finalize()))
+}
+
+/// A throttled, single-line `% done` indicator for the potentially minutes-long tree hash. It writes
+/// to stderr only when attached to a terminal (so pipes and log capture stay clean) and only for
+/// trees large enough that the wait is noticeable - small packages hash instantly and stay silent.
+struct Progress {
+    total: usize,
+    done: usize,
+    enabled: bool,
+    last: std::time::Instant,
+}
+
+impl Progress {
+    fn new(total: usize) -> Self {
+        use std::io::IsTerminal;
+        // Below this the hash is sub-second; a progress line would just flicker.
+        let enabled = total >= 4000 && std::io::stderr().is_terminal();
+        Progress {
+            total,
+            done: 0,
+            enabled,
+            last: std::time::Instant::now(),
+        }
+    }
+
+    fn advance(&mut self, n: usize) {
+        self.done += n;
+        if !self.enabled {
+            return;
+        }
+        // Cap redraws at ~10/s so the terminal is not spammed on fast trees.
+        if self.done < self.total && self.last.elapsed() < std::time::Duration::from_millis(100) {
+            return;
+        }
+        self.last = std::time::Instant::now();
+        let pct = self.done * 100 / self.total.max(1);
+        // `\x1b[2K` clears the line, `\r` returns to column 0; no newline so the line updates in place.
+        eprint!("\r\x1b[2K  hashing {} files… {pct:>3}%", self.total);
+        let _ = std::io::Write::flush(&mut std::io::stderr());
+    }
+
+    fn finish(&self) {
+        if self.enabled {
+            eprint!("\r\x1b[2K");
+            let _ = std::io::Write::flush(&mut std::io::stderr());
+        }
+    }
 }
 
 fn collect_files(base: &Path, rel: PathBuf, out: &mut Vec<PathBuf>) -> Result<()> {
@@ -122,4 +186,39 @@ fn hex(bytes: &[u8]) -> String {
         s.push_str(&format!("{b:02x}"));
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Known-answer test pinning the on-disk hash format. If this value changes, existing lockfiles
+    /// and store entries are invalidated - treat a mismatch as an intentional, breaking format change.
+    #[test]
+    fn hash_tree_is_stable_across_chunk_boundaries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // Span more than one read chunk (CHUNK = 512) and include a nested dir so path order and the
+        // chunked parallel reads are both exercised.
+        std::fs::create_dir(root.join("sub")).unwrap();
+        for i in 0..600 {
+            let dir = if i % 2 == 0 {
+                root.to_path_buf()
+            } else {
+                root.join("sub")
+            };
+            std::fs::write(dir.join(format!("f{i:04}.txt")), format!("contents {i}")).unwrap();
+        }
+        // A `.git` dir must not affect the hash.
+        std::fs::create_dir(root.join(".git")).unwrap();
+        std::fs::write(root.join(".git").join("HEAD"), "ref: refs/heads/main").unwrap();
+
+        let h1 = hash_tree(root).unwrap();
+        let h2 = hash_tree(root).unwrap();
+        assert_eq!(h1, h2, "hashing must be deterministic");
+        assert_eq!(
+            h1, "a43f4c867887c5b6fb810ff6f8b8917fa4938d268abdd0bf053f27c21d18aad7",
+            "on-disk hash format changed; see the doc comment on this test"
+        );
+    }
 }
