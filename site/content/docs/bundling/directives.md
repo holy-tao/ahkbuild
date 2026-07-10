@@ -80,3 +80,6 @@ reference contributes no reachability edges at all, so analysis continues as if 
 Without the directive, the bundler logs a warning naming the file and line whenever a dynamic reference
 disables pruning, so you can find the accesses worth annotating. Run with `-v`/`-vv` (or
 `AHKBUILD_LOG=ahkbuild_shake=debug`) to trace every shake decision.
+
+Directives only work in code you own. To vouch for dynamic code in a **dependency**, use the
+[trust file]({{< relref "/docs/bundling/trust" >}}) instead.

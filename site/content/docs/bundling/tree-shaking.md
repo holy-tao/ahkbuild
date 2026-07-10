@@ -88,7 +88,8 @@ If a dynamic access is known to resolve to a limited set of constant values, use
 enumerate them. If it is safe but you *can't* enumerate the targets - a common case when constructing or
 reflecting over types at runtime - mark the statement
 [`;@AhkBuild-Safe`]({{< relref "/docs/bundling/directives#ahkbuild-safe" >}}) to tell the bundler not to
-blow up on its account.
+blow up on its account. For dynamic code in a **dependency** which you can't annotate in-source vouch
+for it from your project with the [trust file]({{< relref "/docs/bundling/trust" >}}) instead.
 
 Whenever a dynamic reference does defeat analysis, the bundler emits a warning naming the file and line,
 so the accesses worth annotating are easy to find. Raise the verbosity (`-v`/`-vv`, or

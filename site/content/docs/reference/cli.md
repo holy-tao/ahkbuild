@@ -14,6 +14,7 @@ weight: 1
   - [Pruning Packages](#pruning-packages)
   - [Adding and Removing Packages](#adding-and-removing-packages)
   - [Verifying Packages](#verifying-packages)
+  - [Trusting Packages](#trusting-packages)
 - [`ahkbuild run`](#ahkbuild-run)
 - [Global Flags](#global-flags)
   - [Logging](#logging)
@@ -108,6 +109,7 @@ ahkbuild package prune   [--dry-run] [--include-untracked]
 ahkbuild package add     <name> <--git|--gist|--tarball|--release|--path <value>> [selectors] [--config <path>]
 ahkbuild package remove  <names...> [--config <path>]
 ahkbuild package verify  [--config <path>]
+ahkbuild package trust   <package> [files...] [--reason <text>] [--config <path>]
 ```
 
 | Subcommand | Description |
@@ -119,6 +121,7 @@ ahkbuild package verify  [--config <path>]
 | `add <name>` | Add a dependency to `ahkbuild.json`. Edits the manifest only; run `restore` to fetch it. |
 | `remove <names...>` | Remove dependencies from `ahkbuild.json`, drop their lock entries, and unlink them from the farm. |
 | `verify` | Check, offline, that every dependency is pinned and its stored contents still match the lock checksum. |
+| `trust <package> [files...]` | Vouch that a dependency's dynamic code is safe so tree-shaking keeps it narrowly. Records the package's current lock checksum in `ahkbuild.trust.json`. With no files, the whole package is trusted. |
 
 | Flag | Description |
 | --- | --- |
@@ -127,6 +130,7 @@ ahkbuild package verify  [--config <path>]
 | `--locked` | (`restore` only) CI mode: fail if `ahkbuild.lock` is missing or would change, instead of updating it. The store may still be populated from the existing lock. |
 | `--dry-run` | (`prune` only) Report what would be removed without deleting anything. |
 | `--include-untracked` | (`prune` only) Also remove store directories the index has no record of (fetched before the index existed, or by a project not restored since). A project that still needs one but has not been re-restored would lose it, so restore your projects first. |
+| `--reason <text>` | (`trust` only) A note recorded with the trust entry explaining why the dynamic code is safe. |
 
 ### Updating Packages
 
@@ -185,6 +189,24 @@ non-`path` dependency is pinned in the lock, present in the store, and its store
 the lock's checksum (`path` dependencies only need to exist on disk). It exits non-zero if anything is
 missing, unpinned, or has drifted - useful in CI alongside `restore --locked`. Run `restore` to repair
 whatever it flags.
+
+### Trusting Packages
+
+`trust` records that a dependency's dynamic constructs (`%deref%`, dynamic member access/calls) are
+safe, so [tree-shaking]({{< relref "/docs/bundling/tree-shaking" >}}) does not conservatively keep the
+whole module. It is the out-of-source equivalent of the
+[`;@AhkBuild-Safe`]({{< relref "/docs/bundling/directives#ahkbuild-safe" >}}) directive, for packages
+you can't edit. See [trusting packages]({{< relref "/docs/bundling/trust" >}}) for the full model.
+
+```bash
+ahkbuild package trust SomeLib src/dynamic.ahk --reason "vetted: fixed method table"
+ahkbuild package trust SomeLib                 # trust the whole package
+```
+
+The dependency must already be pinned (`restore` first). `trust` writes the package's current lock
+checksum into `ahkbuild.trust.json`, so a later `update` that moves the package invalidates the entry
+(the bundler warns and ignores it) until you re-run `trust` to re-vouch. `path` dependencies are
+mutable and can't be trusted this way - annotate their code in-source with `;@AhkBuild-Safe` instead.
 
 ## `ahkbuild run`
 

@@ -279,3 +279,8 @@ zero or more than one is an error.
 
 `sha256` is valid only on `tarball`/`release`; `asset` only on `release`; `tag`/`branch`/`rev` are
 rejected on `tarball`/`path` (a `release` accepts only `tag`); `git` accepts at most one selector.
+
+> [!NOTE]
+> A dependency's dynamic code can defeat tree-shaking. Since packages are immutable, you vouch for it
+> from a sibling `ahkbuild.trust.json` file rather than in-source - see
+> [Trusting packages]({{< relref "/docs/bundling/trust" >}}).
