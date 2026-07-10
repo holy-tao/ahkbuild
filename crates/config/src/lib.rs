@@ -8,10 +8,12 @@ use serde::Deserialize;
 
 mod dependencies;
 mod manifest;
+mod trust;
 
 pub use ahkbuild_interpret::{AhkVersion, Bitness};
 pub use dependencies::{DependencySource, DependencySpec, GitSelector};
 pub use manifest::{add_dependency, remove_dependency};
+pub use trust::{TrustEntry, TrustFile, TRUST_NAME, TRUST_VERSION};
 
 #[derive(Debug, Deserialize)]
 pub struct BuildConfig {

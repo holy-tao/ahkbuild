@@ -14,6 +14,7 @@ mod list;
 mod lock;
 mod source;
 mod store;
+mod trust;
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -25,6 +26,7 @@ pub use farm::{ahkbuild_dir, modules_dir};
 pub use index::{list_store, prune, PruneReport, RemovedEntry, StorePackage};
 pub use list::{list, PackageStatus};
 pub use lock::{Lockfile, LOCKFILE_NAME, LOCK_VERSION};
+pub use trust::{resolve_trust, FileRule, ResolvedTrust};
 
 use lock::LockEntry;
 
