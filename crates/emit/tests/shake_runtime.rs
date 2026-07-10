@@ -80,7 +80,12 @@ fn shaken_bundle_matches_unshaken_on_interpreter() {
     );
 
     let linked = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
-    let shaken = ahkbuild_shake::shake(&linked.program, &linked.plan, None);
+    let shaken = ahkbuild_shake::shake(
+        &linked.program,
+        &linked.plan,
+        None,
+        &ahkbuild_shake::TrustSet::default(),
+    );
     let opts = ahkbuild_emit::EmitOptions::default();
     let unshaken_src = ahkbuild_emit::emit_ahk(&linked.program, &linked.plan, None, None, &opts);
     let shaken_src =

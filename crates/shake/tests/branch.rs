@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use ahkbuild_fold::{fold, Constants};
 use ahkbuild_ir::{NodeId, NodeKind, Program};
 use ahkbuild_link::{link_entry, SearchPath};
-use ahkbuild_shake::shake;
+use ahkbuild_shake::{shake, TrustSet};
 
 fn write(dir: &std::path::Path, name: &str, contents: &str) -> PathBuf {
     let path = dir.join(name);
@@ -29,7 +29,7 @@ fn dead_members(src: &str, consts: Constants) -> Vec<String> {
     let main = write(tmp.path(), "main.ahk", src);
     let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
     let f = fold(&out.program, &consts);
-    let result = shake(&out.program, &out.plan, Some(&f));
+    let result = shake(&out.program, &out.plan, Some(&f), &TrustSet::default());
     result
         .dead
         .iter()
@@ -48,7 +48,7 @@ fn dead_fns(src: &str, consts: Constants) -> Vec<String> {
     let main = write(tmp.path(), "main.ahk", src);
     let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
     let f = fold(&out.program, &consts);
-    let result = shake(&out.program, &out.plan, Some(&f));
+    let result = shake(&out.program, &out.plan, Some(&f), &TrustSet::default());
     result
         .dead
         .iter()

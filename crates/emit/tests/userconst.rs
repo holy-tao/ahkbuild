@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use ahkbuild_emit::EmitOptions;
 use ahkbuild_fold::{fold, Constants};
 use ahkbuild_link::{link_entry, SearchPath};
-use ahkbuild_shake::shake;
+use ahkbuild_shake::{shake, TrustSet};
 
 /// Run the full fold + tree-shake + emit pipeline (no build-time constants, so only user
 /// constants drive folding).
@@ -17,7 +17,7 @@ fn bundle(src: &str) -> String {
     fs::write(&main, src).unwrap();
     let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
     let f = fold(&out.program, &Constants::default());
-    let s = shake(&out.program, &out.plan, Some(&f));
+    let s = shake(&out.program, &out.plan, Some(&f), &TrustSet::default());
     ahkbuild_emit::emit_ahk(
         &out.program,
         &out.plan,

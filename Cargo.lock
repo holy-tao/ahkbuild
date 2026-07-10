@@ -47,6 +47,7 @@ dependencies = [
  "ahkbuild-pipeline",
  "ahkbuild-pkg",
  "ahkbuild-preprocess",
+ "ahkbuild-shake",
  "ahkbuild-syntax",
  "anyhow",
  "clap",

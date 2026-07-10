@@ -3,7 +3,9 @@
 
 use std::path::{Path, PathBuf};
 
-use ahkbuild_config::BuildConfig;
+use ahkbuild_config::{BuildConfig, TrustFile};
+use ahkbuild_pkg::{resolve_trust, FileRule};
+use ahkbuild_shake::TrustSet;
 use anyhow::{Context, Result};
 
 /// Locate `ahkbuild.json` (explicit `--config`, else discovered by walking up from cwd). Returns the
@@ -38,4 +40,23 @@ pub(crate) fn load(config_path: Option<&Path>) -> Result<(BuildConfig, PathBuf)>
     let config = ahkbuild_config::load(&config_file)?;
     let root = project_root(&config_file);
     Ok((config, root))
+}
+
+/// Build the tree-shaking [`TrustSet`] for a project from its `ahkbuild.trust.json` (absent = empty
+/// trust, i.e. unchanged conservative behavior). Stale/unknown entries are dropped with a warning
+/// by [`resolve_trust`].
+pub(crate) fn load_trust(config: &BuildConfig, project_root: &Path) -> Result<TrustSet> {
+    let Some(file) = TrustFile::load(project_root)? else {
+        return Ok(TrustSet::default());
+    };
+    let resolved = resolve_trust(config, project_root, &file)?;
+    let mut trust = TrustSet::default();
+    for r in resolved {
+        let files = match r.files {
+            FileRule::All => None,
+            FileRule::Paths(paths) => Some(paths),
+        };
+        trust.trust_package(r.roots, files);
+    }
+    Ok(trust)
 }

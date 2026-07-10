@@ -1,4 +1,4 @@
-//! The `ahkbuild package` subcommands: restore, list, update, prune, add, remove, and verify.
+//! The `ahkbuild package` subcommands: restore, list, update, prune, add, remove, verify, and trust.
 
 use std::path::Path;
 
@@ -315,6 +315,59 @@ fn report_verify(report: &VerifyReport) -> Result<()> {
         let noun = if n == 1 { "problem" } else { "problems" };
         bail!("{n} {noun} found; run `ahkbuild package restore` to repair");
     }
+}
+
+/// Record an out-of-band trust entry for a dependency in `ahkbuild.trust.json`, so tree-shaking
+/// treats its dynamic constructs (`%deref%`, dynamic member access/calls) as safe instead of
+/// conservatively keeping the module whole. The package's current lock checksum is stored with the
+/// entry: a later upgrade changes the checksum and silently invalidates the trust, forcing the
+/// author to re-vouch. With no `files`, the whole package is trusted.
+pub(crate) fn trust(
+    config_path: Option<&Path>,
+    package: &str,
+    files: &[String],
+    reason: Option<String>,
+) -> Result<()> {
+    let (config, project_root) = crate::config_util::load(config_path)?;
+
+    let Some(spec) = config.dependencies.get(package) else {
+        bail!("no dependency named {package:?} in ahkbuild.json");
+    };
+    if matches!(spec.source, ahkbuild_config::DependencySource::Path { .. }) {
+        bail!(
+            "{package:?} is a `path` dependency; it is mutable, so annotate the dynamic code \
+             in-source with `;@ahkbuild-safe` instead of adding a trust entry"
+        );
+    }
+
+    let lock = ahkbuild_pkg::Lockfile::load(&project_root)?.unwrap_or_default();
+    let Some(checksum) = lock.get(package).map(|e| e.checksum.clone()) else {
+        bail!("{package:?} is not pinned in ahkbuild.lock; run `ahkbuild package restore` first");
+    };
+
+    let mut trust_file = ahkbuild_config::TrustFile::load(&project_root)?.unwrap_or_default();
+    // Upsert: a package has at most one entry, so replace any existing one.
+    trust_file.trust.retain(|e| e.package != package);
+    trust_file.trust.push(ahkbuild_config::TrustEntry {
+        package: package.to_string(),
+        checksum,
+        files: files.to_vec(),
+        reason,
+    });
+    trust_file.normalized().save(&project_root)?;
+
+    let scope = if files.is_empty() {
+        "the whole package".to_string()
+    } else if files.len() == 1 {
+        files[0].clone()
+    } else {
+        format!("{} files", files.len())
+    };
+    println!(
+        "Trusted {package} ({scope}) in {}.",
+        ahkbuild_config::TRUST_NAME
+    );
+    Ok(())
 }
 
 /// Format a byte count as a compact human-readable size (e.g. `4.2 MB`).

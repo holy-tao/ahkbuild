@@ -23,12 +23,15 @@ mod defineprop;
 mod members;
 mod reach;
 mod resolve;
+mod trust;
 
 use std::collections::HashSet;
 
 use ahkbuild_fold::FoldResult;
 use ahkbuild_ir::{NodeId, NodeKind, Program};
 use ahkbuild_link::BundlePlan;
+
+pub use trust::TrustSet;
 
 /// What tree-shaking found to remove: dead declaration statements, unreferenced class members,
 /// pruned `DefineProp` calls, unused `#Import` directives, and whole modules. The emitter turns
@@ -61,14 +64,19 @@ impl ShakeResult {
 /// When `fold` is `Some`, branches whose conditions folded to a build-time constant are
 /// shaken at the arm level: reachability descends only into the surviving arm, so any
 /// declaration reachable *only* from a dropped arm shakes out with everything else.
-pub fn shake(program: &Program, plan: &BundlePlan, fold: Option<&FoldResult>) -> ShakeResult {
+pub fn shake(
+    program: &Program,
+    plan: &BundlePlan,
+    fold: Option<&FoldResult>,
+    trust: &TrustSet,
+) -> ShakeResult {
     let _span = tracing::info_span!("shake").entered();
     let resolved = resolve::resolve(program, plan);
 
     // Build the program-wide member-name table, then prune standalone `DefineProp` calls whose
     // property names it never matches (this also strips those calls' descriptor referencers,
     // so a name used only inside a pruned call stops counting). Both run before marking.
-    let mut table = members::collect(program, fold);
+    let mut table = members::collect(program, fold, trust);
     let mut dead_defineprops = defineprop::prune(program, &mut table);
 
     // Variable/static constant declarations whose every read folded away (see `fold::userconst`).
@@ -83,7 +91,7 @@ pub fn shake(program: &Program, plan: &BundlePlan, fold: Option<&FoldResult>) ->
         .first()
         .and_then(|g| g.modules.first().copied());
 
-    let mut reach = reach::mark(program, &resolved, &table, &dead_defineprops, fold);
+    let mut reach = reach::mark(program, &resolved, &table, &dead_defineprops, fold, trust);
     let mut result = assemble_result(
         program,
         &resolved,
@@ -114,7 +122,7 @@ pub fn shake(program: &Program, plan: &BundlePlan, fold: Option<&FoldResult>) ->
             if table.referencer_count() == before && !grew {
                 break;
             }
-            reach = reach::mark(program, &resolved, &table, &dead_defineprops, fold);
+            reach = reach::mark(program, &resolved, &table, &dead_defineprops, fold, trust);
             result = assemble_result(
                 program,
                 &resolved,

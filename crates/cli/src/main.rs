@@ -198,6 +198,23 @@ enum PackageCommand {
         #[arg(long)]
         config: Option<PathBuf>,
     },
+    /// Trust a dependency's dynamic constructs so tree-shaking does not conservatively keep it
+    /// whole (records the package's current lock checksum in ahkbuild.trust.json)
+    Trust {
+        /// The dependency (manifest key) to trust.
+        package: String,
+
+        /// Package-relative files to trust. If omitted, the whole package is trusted.
+        files: Vec<String>,
+
+        /// A note recorded with the entry explaining why the dynamic code is safe.
+        #[arg(long)]
+        reason: Option<String>,
+
+        /// Path to ahkbuild.json. If omitted, the file is discovered by walking up from cwd.
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
 }
 
 /// Flags for `package add`. Exactly one source (`--git`/`--gist`/`--tarball`/`--release`/`--path`)
@@ -475,6 +492,12 @@ fn main() -> Result<()> {
             ),
             PackageCommand::Remove { names, config } => package::remove(config.as_deref(), names),
             PackageCommand::Verify { config } => package::verify(config.as_deref()),
+            PackageCommand::Trust {
+                package,
+                files,
+                reason,
+                config,
+            } => package::trust(config.as_deref(), package, files, reason.clone()),
         },
         Commands::Run {
             entry,

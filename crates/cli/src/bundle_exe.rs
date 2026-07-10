@@ -95,7 +95,12 @@ pub(crate) fn bundle_exe(
         is_compiled: Some(true),
         ptr_size,
     };
-    let converged = ahkbuild_pipeline::converge(linked, consts, tree_shake)?;
+    let project_root = config_file
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let trust = crate::config_util::load_trust(&config, &project_root)?;
+    let converged = ahkbuild_pipeline::converge(linked, consts, trust, tree_shake)?;
 
     // 6. Determine output path and the build-script context. The config directory is the project
     //    root: relative paths in argv resolve against it, and scripts run with it as their cwd.

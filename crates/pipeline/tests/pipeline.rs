@@ -9,7 +9,7 @@ use ahkbuild_emit::{materialize, EmitOptions, InlineEdits};
 use ahkbuild_fold::{fold, Constants};
 use ahkbuild_ir::NodeKind;
 use ahkbuild_link::{link_bundle, link_entry, SearchPath};
-use ahkbuild_shake::shake;
+use ahkbuild_shake::{shake, TrustSet};
 
 /// Write `name` -> `contents` under `dir`, creating parent dirs.
 fn write(dir: &Path, name: &str, contents: &str) -> PathBuf {
@@ -58,12 +58,13 @@ fn bundle_matches_single_pass_emit() {
     // Direct, single-pass reference.
     let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
     let f = fold(&out.program, &consts);
-    let s = shake(&out.program, &out.plan, Some(&f));
+    let s = shake(&out.program, &out.plan, Some(&f), &TrustSet::default());
     let direct = ahkbuild_emit::emit_ahk(&out.program, &out.plan, Some(&s), Some(&f), &opts);
 
     // Through the pipeline (consumes the LinkOutput, so re-link).
     let out2 = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
-    let piped = ahkbuild_pipeline::bundle_ahk(out2, consts, true, &opts).unwrap();
+    let piped =
+        ahkbuild_pipeline::bundle_ahk(out2, consts, TrustSet::default(), true, &opts).unwrap();
 
     assert_eq!(direct, piped);
     // Sanity: the branch folded and dead code was removed (so the test isn't vacuous).

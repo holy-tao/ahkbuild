@@ -21,6 +21,8 @@ use ahkbuild_fold::{Branch, FoldResult};
 use ahkbuild_ir::node::{CallExpr, LiteralKind};
 use ahkbuild_ir::{children, NodeId, NodeKind, Program};
 
+use crate::TrustSet;
+
 /// Meta-functions the AHK runtime can invoke implicitly (without explicit user code), so they
 /// are never pruned from a live class. Includes the v2.1 additions `__Ref` and `__Value`.
 const PROTECTED: &[&str] = &[
@@ -137,10 +139,10 @@ impl MemberNameTable {
 /// Scan the whole program and build the member-name table. A member access that `fold` resolved
 /// to a literal (e.g. a getter-const `ClassName.Value`) is not counted as a reference, so an
 /// otherwise-unreferenced getter-only property can shake out.
-pub fn collect(program: &Program, fold: Option<&FoldResult>) -> MemberNameTable {
+pub fn collect(program: &Program, fold: Option<&FoldResult>, trust: &TrustSet) -> MemberNameTable {
     let mut table = MemberNameTable::default();
     for module in program.modules() {
-        collect_node(program, &mut table, module, module, fold);
+        collect_node(program, &mut table, module, module, fold, trust);
     }
     table
 }
@@ -185,6 +187,7 @@ fn collect_node(
     node: NodeId,
     stmt: NodeId,
     fold: Option<&FoldResult>,
+    trust: &TrustSet,
 ) {
     if table.is_blown() {
         return;
@@ -196,14 +199,14 @@ fn collect_node(
             // A member access a user constant folded away is no longer a real reference.
             if !fold.is_some_and(|f| f.folded_reads.contains(&node)) {
                 if *is_dynamic {
-                    extract_dynamic_member(program, table, *member, stmt);
+                    extract_dynamic_member(program, table, *member, stmt, trust);
                 } else {
                     let name = program.text(*member).to_string();
                     table.add_exact(&name, node);
                 }
             }
         }
-        NodeKind::CallExpr(c) => check_reflection_call(program, table, c, node, stmt),
+        NodeKind::CallExpr(c) => check_reflection_call(program, table, c, node, stmt, trust),
         _ => {}
     }
 
@@ -211,7 +214,7 @@ fn collect_node(
     // condition is a build-time constant and the dead arm is removed at emit).
     if let Some(arm) = surviving_arm(program, fold, node) {
         for child in arm {
-            collect_node(program, table, child, stmt, fold);
+            collect_node(program, table, child, stmt, fold, trust);
         }
         return;
     }
@@ -227,7 +230,7 @@ fn collect_node(
     );
     for child in children(&program.arena[node].kind) {
         let next = if descends_to_stmt { child } else { stmt };
-        collect_node(program, table, child, next, fold);
+        collect_node(program, table, child, next, fold, trust);
     }
 }
 
@@ -239,6 +242,7 @@ fn extract_dynamic_member(
     table: &mut MemberNameTable,
     member: NodeId,
     stmt: NodeId,
+    trust: &TrustSet,
 ) {
     let mut has_constant = false;
     let mut outer_prefix = String::new();
@@ -320,7 +324,7 @@ fn extract_dynamic_member(
     }
 
     if !has_constant {
-        blow_up_or_trust(program, table, stmt, member, "dynamic member access");
+        blow_up_or_trust(program, table, stmt, member, "dynamic member access", trust);
     }
 }
 
@@ -335,11 +339,19 @@ fn blow_up_or_trust(
     stmt: NodeId,
     at: NodeId,
     what: &str,
+    trust: &TrustSet,
 ) {
     if program.has_directive(stmt, "ahkbuild-safe") {
         tracing::debug!(
             at = %program.node_location(at),
             "{what} marked ;@ahkbuild-safe - keeping per-member pruning enabled",
+        );
+        return;
+    }
+    if trust.file_is_trusted(program, at) {
+        tracing::debug!(
+            at = %program.node_location(at),
+            "{what} in a trusted package file - keeping per-member pruning enabled",
         );
         return;
     }
@@ -361,6 +373,7 @@ fn check_reflection_call(
     call: &CallExpr,
     call_node: NodeId,
     stmt: NodeId,
+    trust: &TrustSet,
 ) {
     let NodeKind::Identifier = &program.arena[call.callee].kind else {
         return;
@@ -371,7 +384,7 @@ fn check_reflection_call(
     let Some(&arg) = call.args.get(idx) else {
         return;
     };
-    extract_string_expr(program, table, arg, call_node, stmt);
+    extract_string_expr(program, table, arg, call_node, stmt, trust);
 }
 
 /// Pull a member name out of a string-valued expression: a literal -> exact; a concat with a
@@ -383,6 +396,7 @@ fn extract_string_expr(
     expr: NodeId,
     context: NodeId,
     stmt: NodeId,
+    trust: &TrustSet,
 ) {
     if let Some(lit) = string_literal(program, expr) {
         table.add_exact(&lit, context);
@@ -416,6 +430,7 @@ fn extract_string_expr(
         stmt,
         expr,
         "reflection call with a non-literal name",
+        trust,
     );
 }
 

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use ahkbuild_ir::{NodeKind, Program};
 use ahkbuild_link::{link_entry, SearchPath};
-use ahkbuild_shake::{shake, ShakeResult};
+use ahkbuild_shake::{shake, ShakeResult, TrustSet};
 
 fn write(dir: &std::path::Path, name: &str, contents: &str) -> PathBuf {
     let path = dir.join(name);
@@ -21,7 +21,7 @@ fn write(dir: &std::path::Path, name: &str, contents: &str) -> PathBuf {
 /// Link `main` (plus any sibling files already written) and tree-shake the result.
 fn run(main: &std::path::Path) -> (Program, ShakeResult) {
     let out = link_entry(main, &SearchPath::from_dirs([])).unwrap();
-    let result = shake(&out.program, &out.plan, None);
+    let result = shake(&out.program, &out.plan, None, &TrustSet::default());
     (out.program, result)
 }
 
@@ -285,6 +285,53 @@ fn dynamic_reference_without_safe_keeps_the_module() {
         !dead_names(&p, &r).contains("unused"),
         "the dynamic reference should keep the whole module; dead: {:?}",
         dead_names(&p, &r)
+    );
+}
+
+#[test]
+fn trusted_file_lets_a_dynamic_reference_module_shake() {
+    // The out-of-band equivalent of `;@ahkbuild-safe`: a `TrustSet` covering the file makes the
+    // `%name%` deref stop keeping the whole module, so the unreferenced function shakes out - with
+    // no in-source directive. This is what `ahkbuild.trust.json` drives for immutable packages.
+    let tmp = tempfile::tempdir().unwrap();
+    let main = write(
+        tmp.path(),
+        "main.ahk",
+        "fnName := \"Foo\"\n%fnName%()\n\nFoo() {\n}\n\nUnused() {\n}\n",
+    );
+    let out = link_entry(&main, &SearchPath::from_dirs([])).unwrap();
+
+    // Whole-directory trust (the `files: []` / whole-package case).
+    let mut trust = TrustSet::default();
+    trust.trust_package(vec![fs::canonicalize(tmp.path()).unwrap()], None);
+    let r = shake(&out.program, &out.plan, None, &trust);
+    assert!(
+        dead_names(&out.program, &r).contains("unused"),
+        "trusting the file's directory should let the module shake; dead: {:?}",
+        dead_names(&out.program, &r)
+    );
+
+    // Exact-file trust (the `files: ["main.ahk"]` case).
+    let mut trust = TrustSet::default();
+    trust.trust_package(
+        vec![fs::canonicalize(tmp.path()).unwrap()],
+        Some(vec![fs::canonicalize(&main).unwrap()]),
+    );
+    let r = shake(&out.program, &out.plan, None, &trust);
+    assert!(
+        dead_names(&out.program, &r).contains("unused"),
+        "trusting the exact file should let the module shake; dead: {:?}",
+        dead_names(&out.program, &r)
+    );
+
+    // A trust set that does not cover this file leaves the conservative behavior intact.
+    let mut trust = TrustSet::default();
+    trust.trust_package(vec![PathBuf::from("nonexistent-dir")], None);
+    let r = shake(&out.program, &out.plan, None, &trust);
+    assert!(
+        !dead_names(&out.program, &r).contains("unused"),
+        "an unrelated trust set must not shake the module; dead: {:?}",
+        dead_names(&out.program, &r)
     );
 }
 

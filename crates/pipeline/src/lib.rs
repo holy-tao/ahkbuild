@@ -20,7 +20,7 @@ use ahkbuild_emit::{emit_ahk, materialize, EmitOptions, InlineEdits};
 use ahkbuild_fold::{fold, Constants, FoldResult};
 use ahkbuild_ir::Program;
 use ahkbuild_link::{link_bundle, BundlePlan, LinkOutput};
-use ahkbuild_shake::{shake, ShakeResult};
+use ahkbuild_shake::{shake, ShakeResult, TrustSet};
 
 /// Hard cap on outer (structural) rounds, a safety net against an inliner that fails to
 /// converge (e.g. mutually recursive inlining that the budget doesn't catch). Generous: real
@@ -36,6 +36,10 @@ const DEFAULT_INLINE_BUDGET: u32 = 8;
 pub struct Facts {
     /// Build-time constants (`A_IsCompiled`, `A_PtrSize`) for [`fold`](ahkbuild_fold::fold).
     pub consts: Constants,
+    /// Out-of-band trust: package files vouched safe (from `ahkbuild.trust.json`), consulted by
+    /// [`shake`] to suppress a conservative blow-up on a dynamic construct. IR-independent (keyed
+    /// by canonical file path, not `NodeId`), so it carries across re-parses unchanged.
+    pub trust: TrustSet,
     /// Remaining inlining budget. Present as the seam for the future inliner; unused today.
     #[allow(dead_code)]
     inline_budget: u32,
@@ -44,10 +48,11 @@ pub struct Facts {
 }
 
 impl Facts {
-    /// Seed the cross-round facts from the known build-time constants.
-    pub fn new(consts: Constants) -> Self {
+    /// Seed the cross-round facts from the known build-time constants and trust set.
+    pub fn new(consts: Constants, trust: TrustSet) -> Self {
         Self {
             consts,
+            trust,
             inline_budget: DEFAULT_INLINE_BUDGET,
         }
     }
@@ -93,11 +98,16 @@ pub struct Converged {
 /// Run the optimization passes over a linked program to a fixpoint and return the converged
 /// program, plan, and side tables, without emitting. Both emit backends build on this.
 ///
-/// `consts` seeds constant folding; `optimize` runs fold + shake (set `false` for a byte-faithful
-/// bundle, as `--no-tree-shake` does).
-pub fn converge(link_out: LinkOutput, consts: Constants, optimize: bool) -> Result<Converged> {
+/// `consts` seeds constant folding; `trust` supplies out-of-band package trust for `shake`;
+/// `optimize` runs fold + shake (set `false` for a byte-faithful bundle, as `--no-tree-shake` does).
+pub fn converge(
+    link_out: LinkOutput,
+    consts: Constants,
+    trust: TrustSet,
+    optimize: bool,
+) -> Result<Converged> {
     let _span = tracing::info_span!("converge", optimize).entered();
-    let mut facts = Facts::new(consts);
+    let mut facts = Facts::new(consts, trust);
     let mut program = link_out.program;
     let mut plan = link_out.plan;
 
@@ -147,15 +157,17 @@ pub fn converge(link_out: LinkOutput, consts: Constants, optimize: bool) -> Resu
 /// Bundle a linked program to a single self-contained `.ahk`, running the optimization passes
 /// to a fixpoint.
 ///
-/// `consts` seeds constant folding; `optimize` runs fold + shake (set `false` for a
-/// byte-faithful bundle, as `--no-tree-shake` does); `emit` carries the final cosmetic knobs.
+/// `consts` seeds constant folding; `trust` supplies out-of-band package trust for `shake`;
+/// `optimize` runs fold + shake (set `false` for a byte-faithful bundle, as `--no-tree-shake`
+/// does); `emit` carries the final cosmetic knobs.
 pub fn bundle_ahk(
     link_out: LinkOutput,
     consts: Constants,
+    trust: TrustSet,
     optimize: bool,
     emit: &EmitOptions,
 ) -> Result<String> {
-    let c = converge(link_out, consts, optimize)?;
+    let c = converge(link_out, consts, trust, optimize)?;
     Ok(emit_ahk(
         &c.program,
         &c.plan,
@@ -184,7 +196,7 @@ fn run_inner_fixpoint(
     loop {
         let before = round.len();
         round.fold = Some(fold(program, &facts.consts));
-        round.shake = Some(shake(program, plan, round.fold.as_ref()));
+        round.shake = Some(shake(program, plan, round.fold.as_ref(), &facts.trust));
         if round.len() == before {
             break;
         }
@@ -253,15 +265,18 @@ mod tests {
         let src = "if A_IsCompiled {\n  Foo()\n} else {\n  Bar()\n}\n\
                    Bar() {\n  return 1\n}\nFoo() {\n  return 2\n}\nDead() {\n  return 3\n}\n";
         let lo = bundle_program(src);
-        let facts = Facts::new(Constants {
-            is_compiled: Some(false),
-            ptr_size: None,
-        });
+        let facts = Facts::new(
+            Constants {
+                is_compiled: Some(false),
+                ptr_size: None,
+            },
+            TrustSet::default(),
+        );
 
         let round = run_inner_fixpoint(&lo.program, &lo.plan, &facts, true);
 
         let f = fold(&lo.program, &facts.consts);
-        let s = shake(&lo.program, &lo.plan, Some(&f));
+        let s = shake(&lo.program, &lo.plan, Some(&f), &TrustSet::default());
         let rf = round.fold.as_ref().expect("fold ran");
         let rs = round.shake.as_ref().expect("shake ran");
         assert_eq!(rf.branches.len(), f.branches.len());
@@ -276,7 +291,7 @@ mod tests {
     #[test]
     fn no_optimize_yields_empty_round() {
         let lo = bundle_program("x := 1\nDead() {\n  return 1\n}\n");
-        let facts = Facts::new(Constants::default());
+        let facts = Facts::new(Constants::default(), TrustSet::default());
         let round = run_inner_fixpoint(&lo.program, &lo.plan, &facts, false);
         assert_eq!(round.len(), 0);
         assert!(round.fold.is_none() && round.shake.is_none());

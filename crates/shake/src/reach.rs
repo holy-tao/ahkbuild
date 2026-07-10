@@ -20,6 +20,7 @@ use ahkbuild_ir::{children, GroupId, NodeId, NodeKind, Program, Span};
 
 use crate::members::{is_protected, MemberNameTable};
 use crate::resolve::{ModuleRef, Origin, Resolved};
+use crate::TrustSet;
 
 /// The outcome of marking: which nodes are live, which imports were used, and which groups
 /// were loaded (a group never loaded is dead in its entirety).
@@ -43,6 +44,7 @@ pub fn mark(
     table: &MemberNameTable,
     dead_defineprops: &HashSet<NodeId>,
     fold: Option<&FoldResult>,
+    trust: &TrustSet,
 ) -> Reachability {
     let mut m = Marker {
         program,
@@ -50,6 +52,7 @@ pub fn mark(
         table,
         dead_defineprops,
         fold,
+        trust,
         live: HashSet::new(),
         used_imports: HashSet::new(),
         loaded: HashSet::new(),
@@ -85,6 +88,9 @@ struct Marker<'a> {
     /// the surviving arm is walked (its condition and dead arm are skipped — both are removed
     /// at emit, and a folded condition's non-constant parts were short-circuited, never run).
     fold: Option<&'a FoldResult>,
+    /// Out-of-band trust: package files vouched safe, so a dynamic construct in them does not blow
+    /// up the module (the package equivalent of an in-source `;@ahkbuild-safe`).
+    trust: &'a TrustSet,
     live: HashSet<NodeId>,
     used_imports: HashSet<NodeId>,
     /// Groups whose bodies are known to run. Seeded from the entry group and grown as taken
@@ -326,6 +332,11 @@ impl Marker<'_> {
                     tracing::debug!(
                         at = %self.program.node_location(n),
                         "dynamic reference marked ;@ahkbuild-safe - not keeping the module whole",
+                    );
+                } else if self.trust.file_is_trusted(self.program, n) {
+                    tracing::debug!(
+                        at = %self.program.node_location(n),
+                        "dynamic reference in a trusted package file - not keeping the module whole",
                     );
                 } else {
                     self.blow_up(mref, n);
