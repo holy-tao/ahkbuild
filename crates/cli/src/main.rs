@@ -349,7 +349,7 @@ fn main() -> Result<()> {
                         print!("{}", ahkbuild_ir::print_program(&program));
                     }
                     if *sexp {
-                        print!("{}", &root.to_sexp());
+                        print!("{}", root.to_sexp());
                     }
                     return Ok(());
                 }
