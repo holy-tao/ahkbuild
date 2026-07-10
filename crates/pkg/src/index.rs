@@ -16,7 +16,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::lock::Lockfile;
-use crate::store::store_root;
+use crate::store::{stat_tree, store_root, TreeStat};
 
 /// Current index schema version.
 const INDEX_VERSION: u32 = 1;
@@ -54,9 +54,28 @@ pub struct IndexEntry {
     /// Import/manifest names this content has been locked under.
     #[serde(default)]
     pub names: BTreeSet<String>,
-    /// Size of the stored tree in bytes.
+    /// Size of the stored tree in bytes. Doubles as part of the restore fast-path "seal": the tree's
+    /// total byte size the last time its contents were confirmed to hash to `hash`.
     #[serde(default)]
     pub size: u64,
+    /// Number of files in the stored tree (the rest of the seal fingerprint, alongside `size` and
+    /// `mtime`). Guards against additions/removals that leave surviving files' sizes unchanged.
+    #[serde(default)]
+    pub files: u64,
+    /// Newest file mtime in the stored tree, in nanoseconds since the Unix epoch; the mtime component
+    /// of the seal fingerprint.
+    #[serde(default)]
+    pub mtime: u64,
+}
+
+impl IndexEntry {
+    /// Whether this entry's recorded fingerprint matches a freshly computed `stat`, i.e. the store
+    /// directory looks unchanged since it was last confirmed to hash to its name.
+    fn seal_matches(&self, stat: &TreeStat) -> bool {
+        self.size == stat.total_size
+            && self.files == stat.files
+            && self.mtime == stat.max_mtime_nanos
+    }
 }
 
 /// One store entry as reported by `package list --global`.
@@ -130,6 +149,46 @@ pub fn list_store() -> Result<Vec<StorePackage>> {
     list_in(&store_root()?)
 }
 
+/// True when `hash` has a recorded seal equal to `stat`, i.e. the store directory's cheap metadata
+/// fingerprint is unchanged since its contents were last confirmed to hash to `hash`. When true, a
+/// restore can skip the expensive full re-hash.
+pub fn seal_matches(hash: &str, stat: &TreeStat) -> Result<bool> {
+    seal_matches_in(&store_root()?, hash, stat)
+}
+
+/// Record (or refresh) the seal for `hash` after a successful full hash, so subsequent restores take
+/// the fast path. Best-effort: the store is authoritative, so a failed index write only costs a
+/// re-hash next time.
+pub fn write_seal(hash: &str, stat: &TreeStat) -> Result<()> {
+    write_seal_in(&store_root()?, hash, stat)
+}
+
+fn seal_matches_in(root: &Path, hash: &str, stat: &TreeStat) -> Result<bool> {
+    let idx = StoreIndex::load_from(root)?;
+    Ok(idx.packages.get(hash).is_some_and(|e| e.seal_matches(stat)))
+}
+
+fn write_seal_in(root: &Path, hash: &str, stat: &TreeStat) -> Result<()> {
+    let mut idx = StoreIndex::load_from(root)?;
+    // Seal an entry that may not have display metadata yet (a fresh fetch records the index only at
+    // the end of the restore); `record` fills in source/resolved/names afterwards.
+    let entry = idx
+        .packages
+        .entry(hash.to_string())
+        .or_insert_with(|| IndexEntry {
+            source: String::new(),
+            resolved: String::new(),
+            names: BTreeSet::new(),
+            size: stat.total_size,
+            files: stat.files,
+            mtime: stat.max_mtime_nanos,
+        });
+    entry.size = stat.total_size;
+    entry.files = stat.files;
+    entry.mtime = stat.max_mtime_nanos;
+    idx.save_to(root)
+}
+
 /// Garbage-collect store entries no known project's lockfile references. `current_project`, when
 /// given, is registered first so a freshly-restored project is never considered orphaned.
 ///
@@ -156,17 +215,24 @@ fn record_in(root: &Path, project_root: &Path, lock: &Lockfile) -> Result<()> {
     for e in &lock.packages {
         let hash = e.content_hash()?.to_string();
         let dir = root.join(&hash);
-        let size = dir_size(&dir).unwrap_or(0);
+        // One metadata walk serves both the displayed size and the restore fast-path seal. By the time
+        // a restore records the index, every store entry has been confirmed to match its hash, so this
+        // fingerprint is a valid seal.
+        let stat = stat_tree(&dir).unwrap_or_default();
         let entry = idx.packages.entry(hash).or_insert_with(|| IndexEntry {
             source: e.source.clone(),
             resolved: e.resolved.clone(),
             names: BTreeSet::new(),
-            size,
+            size: stat.total_size,
+            files: stat.files,
+            mtime: stat.max_mtime_nanos,
         });
         entry.source = e.source.clone();
         entry.resolved = e.resolved.clone();
         entry.names.insert(e.name.clone());
-        entry.size = size;
+        entry.size = stat.total_size;
+        entry.files = stat.files;
+        entry.mtime = stat.max_mtime_nanos;
     }
     idx.save_to(root)
 }
@@ -398,6 +464,29 @@ mod tests {
         assert_eq!(alpha.names, vec!["Alpha".to_string()]);
         assert_eq!(alpha.refs, 1); // one project references it
         assert_eq!(alpha.source.as_deref(), Some("git+Alpha"));
+    }
+
+    #[test]
+    fn seal_round_trips_and_only_matches_an_identical_fingerprint() {
+        let store = tempfile::tempdir().unwrap();
+        let root = store.path();
+        let h = hash('a');
+        let stat = TreeStat {
+            files: 3,
+            total_size: 1234,
+            max_mtime_nanos: 42,
+        };
+
+        assert!(!seal_matches_in(root, &h, &stat).unwrap(), "no seal yet");
+        write_seal_in(root, &h, &stat).unwrap();
+        assert!(seal_matches_in(root, &h, &stat).unwrap(), "seal matches");
+
+        // Any drift in the fingerprint fails the fast path, forcing a full re-hash.
+        let changed = TreeStat {
+            total_size: 1235,
+            ..stat
+        };
+        assert!(!seal_matches_in(root, &h, &changed).unwrap());
     }
 
     #[test]

@@ -296,7 +296,8 @@ fn drive(
                         tracing::debug!(source = %sid, "resolving dependency");
                         let fresh = fetch::fetch_fresh(src)?;
                         let hash = store::hash_tree(&fresh.dir)?;
-                        store::populate(&hash, &fresh.dir)?;
+                        let final_dir = store::populate(&hash, &fresh.dir)?;
+                        seal_store(&hash, &final_dir);
                         report.fetched += 1;
                         tracing::info!(resolved = %fresh.resolved, checksum = %hash, "fetched dependency");
                         LockEntry {
@@ -368,7 +369,18 @@ fn ensure_store(
 ) -> Result<()> {
     let dir = store::store_path(hash)?;
     if dir.exists() {
+        // Fast path: the store is content-addressed and immutable, so if the tree's cheap metadata
+        // fingerprint (file count, total size, newest mtime) still matches the seal recorded when we
+        // last confirmed it hashes to `hash`, trust it without re-reading and re-hashing every file.
+        let stat = store::stat_tree(&dir)?;
+        if index::seal_matches(hash, &stat)? {
+            tracing::debug!(%hash, "store seal fresh; skipping full re-hash");
+            return Ok(());
+        }
+        // No seal yet, or the metadata moved: fall back to the authoritative content hash, and reseal
+        // on a match so subsequent restores are fast again.
         if store::hash_tree(&dir)? == hash {
+            seal_store(hash, &dir);
             return Ok(());
         }
         // Contents drifted from the pinned checksum. `store::populate` treats an existing store dir
@@ -387,7 +399,22 @@ fn ensure_store(
             "content hash mismatch for {name:?}\n  expected: sha256:{hash}\n  got:      sha256:{got}"
         );
     }
-    store::populate(hash, &staged.dir)?;
+    let final_dir = store::populate(hash, &staged.dir)?;
+    seal_store(hash, &final_dir);
     report.fetched += 1;
     Ok(())
+}
+
+/// Record the seal (metadata fingerprint) for a freshly hashed/populated store directory so later
+/// restores can skip the full re-hash. Best-effort: the store stays authoritative, so a failed seal
+/// write only means the next restore re-hashes and reseals.
+fn seal_store(hash: &str, dir: &Path) {
+    match store::stat_tree(dir) {
+        Ok(stat) => {
+            if let Err(e) = index::write_seal(hash, &stat) {
+                tracing::debug!(error = %e, "could not record store seal");
+            }
+        }
+        Err(e) => tracing::debug!(error = %e, "could not stat store tree to seal it"),
+    }
 }

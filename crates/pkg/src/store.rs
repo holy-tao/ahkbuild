@@ -123,6 +123,51 @@ impl Progress {
     }
 }
 
+/// A cheap metadata fingerprint of a tree: file count, total byte size, and the newest file mtime.
+/// It reads only directory metadata - never file contents - so it stays fast on very large trees, and
+/// is used to decide whether a store directory has changed since it was last confirmed to match its
+/// content hash. Recorded per hash as the "seal" fields of an index entry; see [`crate::index`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TreeStat {
+    pub files: u64,
+    pub total_size: u64,
+    /// Newest file mtime across the tree, in nanoseconds since the Unix epoch (0 if unavailable).
+    pub max_mtime_nanos: u64,
+}
+
+/// Compute a [`TreeStat`] for `dir` from directory metadata alone (no file reads). Skips a top-level
+/// `.git`, matching [`hash_tree`], so a sealed checkout and its tarball equivalent fingerprint alike.
+pub fn stat_tree(dir: &Path) -> Result<TreeStat> {
+    let mut stat = TreeStat::default();
+    stat_into(dir, true, &mut stat)?;
+    Ok(stat)
+}
+
+fn stat_into(dir: &Path, is_root: bool, stat: &mut TreeStat) -> Result<()> {
+    for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
+        let entry = entry?;
+        if is_root && entry.file_name() == ".git" {
+            continue;
+        }
+        let ft = entry.file_type()?;
+        if ft.is_dir() {
+            stat_into(&entry.path(), false, stat)?;
+        } else {
+            let md = entry.metadata()?;
+            stat.files += 1;
+            stat.total_size += md.len();
+            if let Ok(mtime) = md.modified() {
+                let nanos = mtime
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos() as u64)
+                    .unwrap_or(0);
+                stat.max_mtime_nanos = stat.max_mtime_nanos.max(nanos);
+            }
+        }
+    }
+    Ok(())
+}
+
 fn collect_files(base: &Path, rel: PathBuf, out: &mut Vec<PathBuf>) -> Result<()> {
     let dir = base.join(&rel);
     for entry in std::fs::read_dir(&dir).with_context(|| format!("reading {}", dir.display()))? {
@@ -220,5 +265,28 @@ mod tests {
             h1, "a43f4c867887c5b6fb810ff6f8b8917fa4938d268abdd0bf053f27c21d18aad7",
             "on-disk hash format changed; see the doc comment on this test"
         );
+    }
+
+    #[test]
+    fn stat_tree_counts_files_and_bytes_and_skips_git() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir(root.join("sub")).unwrap();
+        std::fs::write(root.join("a.txt"), "aaa").unwrap(); // 3 bytes
+        std::fs::write(root.join("sub").join("b.txt"), "bbbb").unwrap(); // 4 bytes
+                                                                         // A top-level `.git` is ignored, exactly as `hash_tree` ignores it.
+        std::fs::create_dir(root.join(".git")).unwrap();
+        std::fs::write(root.join(".git").join("HEAD"), "ignored").unwrap();
+
+        let stat = stat_tree(root).unwrap();
+        assert_eq!(stat.files, 2);
+        assert_eq!(stat.total_size, 7);
+
+        // Adding a file changes the fingerprint, so a seal built from the old stat no longer matches.
+        std::fs::write(root.join("c.txt"), "c").unwrap();
+        let after = stat_tree(root).unwrap();
+        assert_ne!(after, stat, "a new file must change the fingerprint");
+        assert_eq!(after.files, 3);
+        assert_eq!(after.total_size, 8);
     }
 }
