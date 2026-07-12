@@ -347,7 +347,7 @@ impl<'a> Lowerer<'a> {
 
     /// Open (or reopen) the module named by a `#Module` directive, updating `st.current`.
     fn open_module(&mut self, child: Node, st: &mut TopLevel) {
-        let ident = child.named_child(0);
+        let ident = child.child_by_field_name("name");
         let name = ident
             .map(|n| n.span_text(self.source).trim().to_string())
             .unwrap_or_default();

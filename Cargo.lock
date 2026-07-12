@@ -2051,9 +2051,9 @@ dependencies = [
 
 [[package]]
 name = "tree-sitter-autohotkey"
-version = "0.4.11"
+version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a374a27a1c0aa65b0d17d378d0dccdc7f48a36f1a01934a0b6882588efb52fdb"
+checksum = "773e0cd8406eb7b38592948ee799495f294318d790f7351294f48c03c74684ae"
 dependencies = [
  "cc",
  "tree-sitter-language",
