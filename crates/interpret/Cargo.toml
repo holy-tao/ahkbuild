@@ -10,6 +10,6 @@ publish = false
 anyhow.workspace = true
 clap.workspace = true
 tracing.workspace = true
-ureq = { version = "2", features = ["json"] }
+ureq = { version = "3", features = ["json"] }
 serde_json.workspace = true
-zip = "2"
+zip = "8"
